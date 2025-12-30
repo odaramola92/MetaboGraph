@@ -19,3 +19,76 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Third-Party Database Licenses
+
+MetaboGraph integrates data from the following databases, each with their own licensing terms:
+
+### HMDB (Human Metabolome Database)
+- Website: https://hmdb.ca
+- License: Free for academic and non-commercial use
+- Citation Required: Yes
+- Terms: https://hmdb.ca/about#citing
+
+### LipidMaps (LIPID MAPS Structure Database)
+- Website: https://lipidmaps.org
+- License: Free for academic use
+- Citation Required: Yes
+- Terms: https://lipidmaps.org/about/citing
+
+### PathBank
+- Website: https://pathbank.org
+- License: Open access for academic use
+- Citation Required: Yes
+- Terms: https://pathbank.org/citing
+
+### SMPDB (Small Molecule Pathway Database)
+- Website: https://smpdb.ca
+- License: Free for academic and non-commercial use
+- Citation Required: Yes
+- Terms: https://smpdb.ca/about#citing
+
+### WikiPathways
+- Website: https://wikipathways.org
+- License: Creative Commons Attribution 3.0 Unported (CC BY 3.0)
+- Citation Required: Yes
+- Terms: https://www.wikipathways.org/help.html
+
+### PubChem
+- Website: https://pubchem.ncbi.nlm.nih.gov
+- License: Public Domain (U.S. Government work)
+- Citation: Optional but recommended
+- Terms: https://pubchem.ncbi.nlm.nih.gov/docs/programmatic-access
+
+### KEGG (Kyoto Encyclopedia of Genes and Genomes)
+- Website: https://www.kegg.jp
+- License: Free for academic use; commercial license required for commercial use
+- Citation Required: Yes
+- Terms: https://www.kegg.jp/kegg/legal.html
+
+### Reactome
+- Website: https://reactome.org
+- License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+- Citation Required: Yes
+- Terms: https://reactome.org/license
+
+## Python Dependencies
+
+See requirements.txt for full list of Python packages and their licenses:
+- Most are BSD, MIT, or Apache 2.0 licensed
+- Some scientific packages use their own permissive licenses
+- Check individual package licenses before commercial use
+
+## Commercial Use
+
+For commercial use of MetaboGraph:
+1. MetaboGraph software itself: MIT License (permitted)
+2. Third-party databases: Check individual database terms
+3. Some databases require commercial licenses for commercial applications
+4. Contact database providers for commercial licensing options
+
+## Disclaimer
+
+THE SOFTWARE AND DATABASES ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+Users are responsible for ensuring compliance with all applicable database licenses and terms of use.
+
