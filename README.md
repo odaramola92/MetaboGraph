@@ -304,22 +304,6 @@ Also see [CITATION.cff](CITATION.cff) for structured citation information.
 - ✅ Multi-omics integration
 - ✅ Database management
 
-### Planned Features (v1.1)
-- [ ] MS/MS fragmentation matching
-- [ ] Time-series analysis module
-- [ ] Machine learning for biomarker discovery
-- [ ] Cloud-based processing option
-- [ ] Mobile-responsive web interface
-- [ ] Integration with more databases (BiGG, MetaCyc)
-
-### Future Vision (v2.0)
-- [ ] Real-time analysis dashboard
-- [ ] Collaborative analysis workspace
-- [ ] Automated report generation
-- [ ] Integration with MS vendor software
-- [ ] GPU-accelerated processing
-- [ ] Plugin system for custom analyses
-
 ## ⚠️ Disclaimer
 
 MetaboGraph is provided "as is" without warranty of any kind. The database content and annotations are derived from third-party sources and may contain errors. Always validate critical findings experimentally.
