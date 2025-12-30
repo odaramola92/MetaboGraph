@@ -1,0 +1,10 @@
+{
+  "universes": {
+    "Homo sapiens": 81028,
+    "Mus musculus": 72376,
+    "Rattus norvegicus": 71723
+  },
+  "calculated_date": "2025-12-21T16:58:17.781956",
+  "description": "Species-specific universe sizes (U) for Fisher ORA",
+  "note": "Automatically recalculated when databases are updated"
+}

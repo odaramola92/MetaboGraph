@@ -1,0 +1,16 @@
+{
+  "id_selected_columns": [
+    "HMDB_ID",
+    "PubChem_CID",
+    "KEGG_ID",
+    "LipidMaps_ID",
+    "ChEBI_ID",
+    "CAS",
+    "SMILES",
+    "InChI",
+    "InChIKey"
+  ],
+  "ms2_filter": "none",
+  "require_endogenous_yes": false,
+  "dedup_rt_window_minutes": 2.0
+}

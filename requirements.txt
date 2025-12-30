@@ -1,0 +1,34 @@
+# MetaboGraph Requirements
+
+# Core dependencies
+numpy>=1.21.0
+pandas>=1.3.0
+scipy>=1.7.0
+
+# Data storage
+pyarrow>=5.0.0  # For feather file format
+
+# GUI
+tkinter  # Usually included with Python
+
+# Network analysis and visualization
+networkx>=2.6.0
+pyvis>=0.2.0
+
+# Statistical analysis
+statsmodels>=0.13.0
+scikit-learn>=1.0.0
+
+# Plotting
+matplotlib>=3.4.0
+seaborn>=0.11.0
+
+# Database and data processing
+requests>=2.26.0  # For downloading databases
+beautifulsoup4>=4.10.0  # For parsing HTML/XML
+lxml>=4.6.0  # For XML parsing
+
+# Utilities
+tqdm>=4.62.0  # Progress bars
+openpyxl>=3.0.0  # Excel file support
+xlrd>=2.0.0  # Excel file reading
