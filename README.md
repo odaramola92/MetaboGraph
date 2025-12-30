@@ -63,7 +63,7 @@
 
 ## 📸 Screenshots
 
-*[Add screenshots of your application here]*
+see 'docs/images'
 
 ## 🚀 Quick Start
 
@@ -78,7 +78,7 @@
 #### Option 2: Python Installation
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/MetaboGraph.git
+git clone https://github.com/odaramola92/MetaboGraph.git
 cd MetaboGraph
 
 # Create virtual environment
@@ -275,7 +275,7 @@ If you use MetaboGraph in your research, please cite:
   title = {MetaboGraph: A Comprehensive Platform for Metabolomics Data Analysis},
   year = {2024},
   publisher = {GitHub},
-  url = {https://github.com/yourusername/MetaboGraph}
+  url = {https://github.com/odaramola92/MetaboGraph}
 }
 ```
 
@@ -290,8 +290,8 @@ Also see [CITATION.cff](CITATION.cff) for structured citation information.
 ## 📞 Support
 
 - **Documentation**: [docs/](docs/)
-- **Issues**: [GitHub Issues](https://github.com/yourusername/MetaboGraph/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/MetaboGraph/discussions)
+- **Issues**: [GitHub Issues](https://github.com/odaramola92/MetaboGraph/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/odaramola92/MetaboGraph/discussions)
 - **Email**: support@metabograph.org
 
 ## 🗺️ Roadmap
@@ -310,13 +310,13 @@ MetaboGraph is provided "as is" without warranty of any kind. The database conte
 
 ## 📈 Statistics
 
-![GitHub stars](https://img.shields.io/github/stars/yourusername/MetaboGraph?style=social)
-![GitHub forks](https://img.shields.io/github/forks/yourusername/MetaboGraph?style=social)
-![GitHub issues](https://img.shields.io/github/issues/yourusername/MetaboGraph)
-![GitHub pull requests](https://img.shields.io/github/issues-pr/yourusername/MetaboGraph)
+![GitHub stars](https://img.shields.io/github/stars/odaramola92/MetaboGraph?style=social)
+![GitHub forks](https://img.shields.io/github/forks/odaramola92/MetaboGraph?style=social)
+![GitHub issues](https://img.shields.io/github/issues/odaramola92/MetaboGraph)
+![GitHub pull requests](https://img.shields.io/github/issues-pr/odaramola92/MetaboGraph)
 
 ---
 
 **Made with ❤️ for the metabolomics community**
 
-[Website](https://metabograph.org) | [Documentation](docs/) | [GitHub](https://github.com/yourusername/MetaboGraph) | [Twitter](https://twitter.com/metabograph)
+[Documentation](docs/)
