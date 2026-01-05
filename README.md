@@ -3,7 +3,7 @@
 **MetaboGraph** is a comprehensive metabolomics and lipidomics data analysis platform that provides end-to-end workflow for metabolite identification, pathway enrichment, and multi-omics integration. Designed for both beginner and advanced users, MetaboGraph combines powerful computational methods with an intuitive graphical interface.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.1+](https://img.shields.io/badge/python-3.1+-blue.svg)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
 
 ## 🌟 Features
@@ -94,7 +94,7 @@ python metabograph.py
 
 ### System Requirements
 - **OS**: Windows 10/11, macOS 10.14+, or Linux
-- **Python**: 3.8 or higher (developed on 3.13)
+- **Python**: 3.1 or higher (developed on 3.13)
 - **RAM**: 8 GB minimum, 16 GB recommended
 - **Disk Space**: 5 GB (includes databases)
 - **Internet**: Required for database downloads and online API queries
