@@ -9,6 +9,7 @@ import seaborn as sns
 import sys
 import numpy as np
 import re
+import colorsys
 from scipy import stats
 from sklearn.cluster import AgglomerativeClustering
 from scipy.stats import pearsonr
@@ -399,7 +400,7 @@ def build_class_level_network_dataframe(
         agg_row = block.iloc[0].copy()
         member_names = [
             str(val).strip()
-            for val in block.get(name_col, '').astype(str).tolist()
+            for val in block[name_col].astype(str).tolist()
             if str(val).strip() and str(val).lower() != 'nan'
         ]
         if not member_names:
@@ -758,10 +759,16 @@ def import_data(file_path1, sheet_name1=None,
                         filtered_pathways.append(pathway)
                 
                 # Store disease pathways in a temporary column to merge later
-                if disease_pathways and hasattr(row, 'name'):  # row.name is the index
-                    # Access the index properly
-                    idx = row.name if hasattr(row, 'name') else row.get('Name', '')
-                    if idx in df.index:
+                if disease_pathways:
+                    # Get the metabolite name from the row data
+                    metabolite_name = row.get('Name', '')
+                    if metabolite_name and metabolite_name in df.index:
+                        idx = metabolite_name
+                    else:
+                        # If not in index, skip storing to temp column (data structure issue)
+                        idx = None
+                    
+                    if metabolite_name and idx and idx in df.index:
                         # Merge with existing Associated_Diseases
                         existing_diseases = df.at[idx, 'Associated_Diseases'] if 'Associated_Diseases' in df.columns else ''
                         existing_list = []
@@ -1496,7 +1503,7 @@ def calculate_pathway_statistics(df, min_metabolites=2,
     print(f"\nFDR Correction Impact:")
     print(f"  Significant at raw p ≤ {max_pvalue}: {n_significant_raw} pathways")
     print(f"  Significant at FDR ≤ {max_pvalue}: {n_significant_fdr} pathways")
-    print(f"  Reduction: {n_significant_raw - n_significant_fdr} pathways (likely false positives)")
+    print(f"  Reduction: {int(n_significant_raw) - int(n_significant_fdr)} pathways (likely false positives)")  # type: ignore
     print(f"  FDR-adjusted p-values range: [{adjusted_pvalues.min():.2e}, {adjusted_pvalues.max():.2e}]")
     print(f"{'='*70}\n")
     
@@ -2534,7 +2541,7 @@ def create_metabolite_pathway_network(df, pos_set_zscore=1, neg_set_zscore=-1,
     orphan_gray_nodes = []
     for node, data in G.nodes(data=True):
         if data.get('node_type') == 'metabolite' and data.get('regulation') == 'no_change':
-            if G.degree(node) == 0:
+            if G.degree(node) == 0:  # type: ignore
                 orphan_gray_nodes.append(node)
     
     if orphan_gray_nodes:
@@ -3044,7 +3051,7 @@ def create_metabolite_pathway_network_from_stats(df, pathway_stats,
     orphan_gray_nodes = []
     for node, data in G.nodes(data=True):
         if data.get('node_type') == 'metabolite' and data.get('regulation') == 'no_change':
-            if G.degree(node) == 0:
+            if G.degree(node) == 0:  # type: ignore
                 orphan_gray_nodes.append(node)
     
     if orphan_gray_nodes:
@@ -4285,8 +4292,18 @@ def create_interactive_metabolite_pathway_plot_from_stats(df, pathway_stats,
     
     return fig
 
-def create_pathway_summary_plots(metabolites, pathways):
-    """Create individual bar plots and bubble plots for pathway analysis"""
+def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
+    """Create individual bar plots and bubble plots for pathway analysis
+    
+    Parameters:
+    -----------
+    metabolites : dict
+        Metabolite data
+    pathways : dict
+        Pathway data
+    font_size_scale : float, optional (default=1.0)
+        Multiplier for all font sizes. Use 1.5 for 50% larger, 2.0 for 2x larger, etc.
+    """
     
     # Extract neutral_z_band from metadata (use 0.5 as default if not found)
     neutral_z_band = pathways.get('_neutral_z_band', 0.5)
@@ -4340,13 +4357,13 @@ def create_pathway_summary_plots(metabolites, pathways):
     
     # For vertical bar plots: width scales with pathway count
     # Base: 600px, add 80px per pathway, min 600, max 2000
-    vertical_width = max(100, min(100, 50 + num_pathways * 80))
+    vertical_width = max(600, min(2000, 600 + num_pathways * 80))
     vertical_height = 600  # Fixed height for vertical plots
     
     # For horizontal bar plots: height scales with pathway count
     # Base: 400px, add 60px per pathway, min 400, max 1500
     horizontal_width = 900  # Fixed width for horizontal plots
-    horizontal_height = max(100, min(100, 50 + num_pathways * 60))
+    horizontal_height = max(400, min(1500, 400 + num_pathways * 60))
     
     # For bubble plot: adjust based on pathway count
     bubble_width = max(900, min(1600, 900 + num_pathways * 40))
@@ -4392,14 +4409,14 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Pathway States by Significance",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 16}
+            'font': {'size': int(16 * font_size_scale)}
         },
         yaxis=dict(
-            title=dict(text="z-score", font=dict(weight='bold', size=14)),
+            title=dict(text="z-score", font=dict(weight='bold', size=int(14 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             tickformat='.1f',
             zeroline=True,
             zerolinecolor='black',
@@ -4408,18 +4425,19 @@ def create_pathway_summary_plots(metabolites, pathways):
                    max(3, max([p['z_score'] for p in pathway_list], default=3) * 1.1)]
         ),
         xaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=14)),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(14 * font_size_scale))),
+            tickangle=-45,
             showline=False,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             mirror=False
         ),
         plot_bgcolor='white',
         paper_bgcolor='white',
         width=vertical_width,
         height=vertical_height,
-        margin=dict(l=80, r=50, t=80, b=50),
+        margin=dict(l=80, r=50, t=80, b=150),
         bargap=0.3  # Add gap between bars (0.0 = no gap, 1.0 = maximum gap)
     )
     # Legend: only two entries (Activated/Red, Inhibited/Blue)
@@ -4429,7 +4447,7 @@ def create_pathway_summary_plots(metabolites, pathways):
     fig1.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
                               marker=dict(color='#3A7CFF', size=10),
                               name='Inhibited (Blue)', showlegend=True))
-    fig1.update_layout(legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=12)))
+    fig1.update_layout(legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=int(12 * font_size_scale))))
     
     # Figure 2: Pathway Significance using -log(p-value) - Vertical Bar Plot
     fig2 = go.Figure()
@@ -4462,24 +4480,24 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Pathway Significance (-log p-value) - Vertical",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 16}
+            'font': {'size': int(16 * font_size_scale)}
         },
         xaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=14)),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(14 * font_size_scale))),
             tickangle=45,
             showline=True,
             linewidth=2,
             linecolor='black',
             categoryorder='array',
             categoryarray=fig2_names,
-            tickfont=dict(weight='bold', size=12)
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale))
         ),
         yaxis=dict(
-            title=dict(text="-log10(p-value)", font=dict(weight='bold', size=14)),
+            title=dict(text="-log10(p-value)", font=dict(weight='bold', size=int(14 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             tickformat='.1f',
             range=[0, max(5, max(fig2_values, default=5) * 1.1)]
         ),
@@ -4487,7 +4505,7 @@ def create_pathway_summary_plots(metabolites, pathways):
         paper_bgcolor='white',
         width=vertical_width,
         height=vertical_height,
-        margin=dict(l=50, r=50, t=80, b=150),
+        margin=dict(l=100, r=50, t=80, b=150),
         bargap=0.3  # Add gap between bars
     )
     # Legend: only two entries (Activated/Red, Inhibited/Blue)
@@ -4498,7 +4516,7 @@ def create_pathway_summary_plots(metabolites, pathways):
                               marker=dict(color='#3A7CFF', size=10),
                               name='Inhibited (Blue)', showlegend=True))
     fig2.update_layout(showlegend=True,
-                       legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=12)))
+                       legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=int(12 * font_size_scale))))
     
     # Figure 3: Pathway Significance using -log(p-value) - Horizontal Bar Plot
     fig3 = go.Figure()
@@ -4532,23 +4550,23 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Pathway Significance (-log p-value) - Horizontal",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 16}
+            'font': {'size': int(16 * font_size_scale)}
         },
         xaxis=dict(
-            title=dict(text="-log(p-value)", font=dict(weight='bold', size=14)),
+            title=dict(text="-log(p-value)", font=dict(weight='bold', size=int(14 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             tickformat='.1f',
             range=[0, max(5, max(fig3_values, default=5) * 1.1)]
         ),
         yaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=14)),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(14 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             categoryorder='array',
             categoryarray=fig3_names
         ),
@@ -4556,7 +4574,7 @@ def create_pathway_summary_plots(metabolites, pathways):
         paper_bgcolor='white',
         width=horizontal_width,
         height=horizontal_height,
-        margin=dict(l=300, r=50, t=80, b=50),
+        margin=dict(l=300, r=50, t=80, b=80),
         bargap=0.3  # Add gap between bars
     )
     # Legend: only two entries (Activated/Red, Inhibited/Blue)
@@ -4567,7 +4585,7 @@ def create_pathway_summary_plots(metabolites, pathways):
                               marker=dict(color='#3A7CFF', size=10),
                               name='Inhibited (Blue)', showlegend=True))
     fig3.update_layout(showlegend=True,
-                       legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=12)))
+                       legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=1.02, font=dict(size=int(12 * font_size_scale))))
     
     
     # Figure 4: Bubble plot - Pathway impact (x: avg fold change, size: number of metabolites)
@@ -4618,7 +4636,7 @@ def create_pathway_summary_plots(metabolites, pathways):
             ),
             text=[str(p['bubble_number']) for p in pathway_list],
             textposition="middle center",
-            textfont=dict(size=12, family='Arial Black', color='white'),
+            textfont=dict(size=int(12 * font_size_scale), family='Arial Black', color='white'),
             name='Pathway Impact',
             hovertemplate='<b>Pathway %{text}</b><br>' +
                          'Avg Fold Change: %{x:.2f}<br>' +
@@ -4661,25 +4679,25 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Metabolites Pathway Bubble Plot Analysis<br><sub>Bubble size represents metabolite count level</sub>",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 16}
+            'font': {'size': int(16 * font_size_scale)}
         },
         xaxis=dict(
-            title=dict(text="Average log2(Fold Change)", font=dict(weight='bold', size=14)),
+            title=dict(text="Average log2(Fold Change)", font=dict(weight='bold', size=int(14 * font_size_scale))),
             zeroline=True,
             zerolinecolor='black',
             zerolinewidth=1,
             showline=True,
             linewidth=1,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             tickformat='.1f'
         ),
         yaxis=dict(
-            title=dict(text="-log10(p-value)", font=dict(weight='bold', size=14)),
+            title=dict(text="-log10(p-value)", font=dict(weight='bold', size=int(14 * font_size_scale))),
             showline=True,
             linewidth=1,
             linecolor='black',
-            tickfont=dict(weight='bold', size=12),
+            tickfont=dict(weight='bold', size=int(12 * font_size_scale)),
             tickformat='.1f',
             range=[max(0, y_min - y_padding), y_max + y_padding]
         ),
@@ -4698,7 +4716,7 @@ def create_pathway_summary_plots(metabolites, pathways):
         xref="paper", yref="paper",
         align="left",
         showarrow=False,
-        font=dict(size=11, family='Arial'),
+        font=dict(size=int(11 * font_size_scale), family='Arial'),
         bgcolor="rgba(255,255,255,0.9)",
         bordercolor="rgba(0,0,0,0.2)",
         borderwidth=1,
@@ -4829,7 +4847,7 @@ def create_pathway_summary_plots(metabolites, pathways):
                         text="-log10(p-value)",
                         font=dict(size=14, weight='bold')
                     ),
-                    thickness=20,
+                    thickness=10,
                     len=0.7,
                     x=1.02,
                     xanchor='left',
@@ -4848,23 +4866,23 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Pathway Enrichment Analysis (Top 20)",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 18, 'weight': 'bold'}
+            'font': {'size': int(22 * font_size_scale), 'weight': 'bold'}
         },
         xaxis=dict(
-            title=dict(text="Metabolite Count", font=dict(weight='bold', size=16)),
+            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(20 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=13),
+            tickfont=dict(weight='bold', size=int(15 * font_size_scale)),
             tickformat='d',
             range=[0, max(counts, default=1) * 1.1] if counts else [0, 1]
         ),
         yaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=16)),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(20 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=font_size_y),
+            tickfont=dict(weight='bold', size=int(max(10, font_size_y + 2) * font_size_scale)),
             categoryorder='array',
             categoryarray=names
         ),
@@ -4962,13 +4980,13 @@ def create_pathway_summary_plots(metabolites, pathways):
                 colorbar=dict(
                     title=dict(
                         text="-log10(p-value)",
-                        font=dict(size=14, weight='bold')
+                        font=dict(size=int(14 * font_size_scale), weight='bold')
                     ),
-                    thickness=20,
+                    thickness=10,
                     len=0.7,
                     x=1.02,
                     xanchor='left',
-                    tickfont=dict(size=12, weight='bold'),
+                    tickfont=dict(size=int(12 * font_size_scale), weight='bold'),
                     tickformat='.1f'
                 ),
                 showscale=True
@@ -4983,23 +5001,23 @@ def create_pathway_summary_plots(metabolites, pathways):
             'text': "Pathway Enrichment Analysis (Selected Pathways)",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': 18, 'weight': 'bold'}
+            'font': {'size': int(22 * font_size_scale), 'weight': 'bold'}
         },
         xaxis=dict(
-            title=dict(text="Metabolite Count", font=dict(weight='bold', size=16)),
+            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(20 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=13),
+            tickfont=dict(weight='bold', size=int(15 * font_size_scale)),
             tickformat='d',
             range=[0, max(selected_counts, default=1) * 1.1] if selected_counts else [0, 1]
         ),
         yaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=16)),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(20 * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=selected_font_size_y),
+            tickfont=dict(weight='bold', size=int(max(10, selected_font_size_y + 2) * font_size_scale)),
             categoryorder='array',
             categoryarray=selected_names
         ),
@@ -5013,69 +5031,416 @@ def create_pathway_summary_plots(metabolites, pathways):
 
     fig6.update_traces(selector=dict(type='bar'), width=enrichment_bar_width)
     
-    return fig1, fig2, fig3, fig4, fig5, fig6
+    # Figure 7: Chord Diagram - Pathway to Metabolite Connections
+    # Use top pathways (same as fig5 for consistency) and their 'hits' metabolites
+    fig_legend = None  # Initialize chord diagram legend figure
+    print(f"\n[CHORD DIAGRAM - TOP PATHWAYS]")
+    print(f"  Creating chord diagram for {len(top_pathways)} pathways")
+    
+    try:
+        import pycirclize
+        
+        # Build chord data: collect all pathway->metabolite edges with metabolite log2FC
+        chord_edges = []
+        metabolite_labels = []
+        metabolite_seen = set()
+        metabolite_log2fc_map = {}  # Map metabolite name to its log2FC
+        
+        # Assign distinct colors to pathways
+        num_pathways_chord = len(top_pathways)
+        pathway_colors_chord = {}
+        
+        for pidx, pathway in enumerate(top_pathways):
+            hue = (pidx / max(1, num_pathways_chord - 1)) if num_pathways_chord > 1 else 0.5
+            saturation = 0.7
+            lightness = 0.5
+            rgb = colorsys.hls_to_rgb(hue, lightness, saturation)
+            hex_color = '#{:02x}{:02x}{:02x}'.format(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+            pathway_colors_chord[pathway['name']] = hex_color
+            
+            # Collect edges for this pathway (using 'hits' for significant metabolites)
+            for met_name in pathway['hits']:
+                if met_name in metabolites:
+                    met_data = metabolites[met_name]
+                    log2fc = met_data.get('log2FC', 0)
+                    
+                    chord_edges.append({
+                        'pathway': pathway['name'],
+                        'metabolite': met_name,
+                        'log2fc': log2fc
+                        # NOTE: Chord color will be pathway color, not metabolite color
+                    })
+                    
+                    # Track unique metabolites and their log2FC
+                    if met_name not in metabolite_seen:
+                        metabolite_labels.append(met_name)
+                        metabolite_seen.add(met_name)
+                        metabolite_log2fc_map[met_name] = log2fc
+                    else:
+                        # Update with latest log2FC value (in case metabolite appears in multiple pathways)
+                        metabolite_log2fc_map[met_name] = log2fc
+        
+        print(f"  Total chord edges: {len(chord_edges)}")
+        print(f"  Pathway colors assigned: {len(pathway_colors_chord)}")
+        print(f"  Unique metabolites: {len(metabolite_seen)}")
+        
+        if chord_edges and len(metabolite_labels) > 0:
+            # Calculate actual log2FC range from metabolites for proper color scaling
+            if metabolite_log2fc_map:
+                log2fc_values = list(metabolite_log2fc_map.values())
+                min_log2fc = min(log2fc_values)
+                max_log2fc = max(log2fc_values)
+                
+                # Ensure symmetric range for better color representation
+                max_abs_log2fc = max(abs(min_log2fc), abs(max_log2fc))
+                # Use at least 0.5 to avoid too narrow range
+                max_abs_log2fc = max(0.5, max_abs_log2fc)
+                
+                log2fc_range_min = -max_abs_log2fc
+                log2fc_range_max = max_abs_log2fc
+                
+                print(f"  Log2FC range: {min_log2fc:.3f} to {max_log2fc:.3f}")
+                print(f"  Using symmetric range for colors: {log2fc_range_min:.3f} to {log2fc_range_max:.3f}")
+            else:
+                # Fallback defaults
+                log2fc_range_min = -2.0
+                log2fc_range_max = 2.0
+            
+            # Create sectors: pathways and metabolites
+            sectors = {}
+            for pathway in top_pathways:
+                sectors[pathway['name']] = len([e for e in chord_edges if e['pathway'] == pathway['name']])
+            
+            for met in metabolite_labels:
+                sectors[met] = len([e for e in chord_edges if e['metabolite'] == met])
+            
+            # Initialize circos plot with sectors
+            circos = pycirclize.Circos(sectors, space=5)
+            
+            # Add colored arc tracks and labels for all sectors
+            for sector in circos.sectors:
+                # First: Add colored arc track for this sector
+                try:
+                    # Determine the appropriate color for this sector
+                    if sector.name in metabolite_log2fc_map:
+                        # Metabolite: color based on log2FC gradient
+                        log2fc = metabolite_log2fc_map[sector.name]
+                        
+                        # Map log2FC to color gradient using actual data range
+                        # Normalize to 0-1 range using calculated min/max
+                        norm_value = (log2fc - log2fc_range_min) / (log2fc_range_max - log2fc_range_min)
+                        norm_value = max(0, min(1, norm_value))  # Clamp to 0-1
+                        
+                        # Color gradient from green (#22BB22) through gray (#CCCCCC) to red (#FF4444)
+                        if norm_value < 0.5:
+                            # Green to Gray: interpolate 0->0.5
+                            t = norm_value * 2
+                            r = int(0x22 + (t * 0xAA))  # 34 to 204
+                            g = int(0xBB + (t * 0x11))  # 187 to 204
+                            b = int(0x22 + (t * 0xAA))  # 34 to 204
+                        else:
+                            # Gray to Red: interpolate 0.5->1
+                            t = (norm_value - 0.5) * 2
+                            r = int(0xCC + (t * 0x33))  # 204 to 255
+                            g = int(0xCC - (t * 0xAA))  # 204 to 34
+                            b = int(0xCC - (t * 0xAA))  # 204 to 34
+                        
+                        sector_color = f'#{r:02x}{g:02x}{b:02x}'
+                    
+                    elif sector.name in pathway_colors_chord:
+                        # Pathway: use same color as its chords
+                        sector_color = pathway_colors_chord[sector.name]
+                    
+                    else:
+                        # Default color if not found
+                        sector_color = '#CCCCCC'
+                    
+                    # Add colored arc track at the perimeter (radius 95-100)
+                    track = sector.add_track((95, 100))
+                    track.rect(sector.start, sector.end, fc=sector_color, ec='black', lw=0.5)
+                    
+                except Exception as track_err:
+                    print(f"  Warning: Could not add color track for {sector.name}: {track_err}")
+                
+                # Second: Add text label with proper rotation (matching chord_diagram.py exactly)
+                label_text = sector.name
+                if True:  # uppercase_labels always True for consistency
+                    label_text = label_text.upper()
 
-def create_network_legend_figure(include_upstream: bool = True, include_diseases: bool = True):
-    """Create a standalone legend figure for the network and return a Plotly Figure.
+                LABEL_WRAP = 16        # if label longer than this, attempt two-line wrap
+                LABEL_BREAK = 25       # break single long words at this length
 
-    This mirrors the legend entries used by the interactive HTML network so it can be
-    exported as a PNG alongside the network output.
+                if len(label_text) > LABEL_WRAP:
+                    parts = label_text.split()
+                    if len(parts) > 1:
+                        mid = len(parts) // 2
+                        label_text = " ".join(parts[:mid]) + "\n" + " ".join(parts[mid:])
+                    else:
+                        # Break long single word across lines instead of truncating
+                        label_text = label_text[:LABEL_BREAK] + "\n" + label_text[LABEL_BREAK:]
+                
+                # Calculate proper text rotation and alignment based on sector position
+                try:
+                    # Get sector degree position
+                    deg_start, deg_end = sector.deg_lim
+                    mid_deg = (deg_start + deg_end) / 2.0
+                    
+                    # Compute rotation/ha from side only: all RIGHT sectors share the same
+                    # baseline direction, and all LEFT sectors share the same baseline.
+                    # This keeps orientation consistent and does not rely on names.
+                    if 90 < mid_deg < 270:
+                        # LEFT side: radial outward + 180 so baseline reads L→R consistently
+                        rotation = 90 - mid_deg + 180
+                        ha = 'right'
+                    else:
+                        # RIGHT side: radial outward, keep left alignment
+                        rotation = 90 - mid_deg
+                        ha = 'left'
+
+                    # normalize rotation to [-180, 180] then to readable range [-90, 90]
+                    rotation = ((rotation + 180) % 360) - 180
+                    if rotation < -90:
+                        rotation += 180
+                        ha = 'right' if ha == 'left' else 'left'
+                    elif rotation > 90:
+                        rotation -= 180
+                        ha = 'right' if ha == 'left' else 'left'
+
+                    # Use consistent label radius for all positions
+                    r_used = 112
+                    
+                    # Add label at sector position with proper rotation
+                    sector.text(
+                        label_text,
+                        r=r_used,
+                        size=int(12 * font_size_scale),
+                        weight='bold',
+                        rotation=rotation,
+                        ha=ha,
+                        va='center',
+                        rotation_mode='anchor',
+                        adjust_rotation=False  # respect provided rotation/ha instead of auto-adjust
+                    )
+                except Exception as label_err:
+                    print(f"  Warning: Could not add label for {sector.name}: {label_err}")
+            
+            # Draw chords for each edge using PATHWAY colors
+            for edge in chord_edges:
+                try:
+                    pathway_sector = circos.get_sector(edge['pathway'])
+                    met_sector = circos.get_sector(edge['metabolite'])
+                    
+                    # Draw chord with PATHWAY color (not metabolite color)
+                    pathway_color = pathway_colors_chord[edge['pathway']]
+                    linewidth = max(0.5, min(2.0, abs(edge['log2fc']) * 0.4 + 0.5))
+                    circos.link(
+                        (pathway_sector.name, pathway_sector.start, pathway_sector.end),
+                        (met_sector.name, met_sector.start, met_sector.end),
+                        color=pathway_color,
+                        alpha=0.5,
+                        linewidth=linewidth
+                    )
+                except Exception as link_err:
+                    print(f"  Warning: Could not draw link {edge['pathway']} -> {edge['metabolite']}: {link_err}")
+            
+            # Render the circos diagram
+            fig7 = circos.plotfig()
+            
+            # If plotfig() doesn't return a figure, get current figure
+            if fig7 is None:
+                fig7 = plt.gcf()
+            
+            # Set background color
+            fig7.patch.set_facecolor('white')
+            
+            # Set dynamic size based on number of sectors for better label accommodation
+            # More sectors = need more space for labels
+            num_sectors = len(sectors)
+            # Base size 8 inches, add 0.1 inch per sector (up to max 12 inches)
+            dynamic_size = min(12, max(8, 8 + (num_sectors - 20) * 0.1))
+            fig7.set_size_inches(dynamic_size, dynamic_size)
+            
+            print("[CHORD DIAGRAM] Successfully created\n")
+            
+            # Generate separate legend figure for the chord diagram
+            try:
+                fig_legend = create_chord_diagram_legend(pathway_colors_chord, log2fc_range_min, log2fc_range_max)
+                print("[CHORD DIAGRAM LEGEND] Successfully created\n")
+            except Exception as legend_err:
+                print(f"[⚠️ CHORD DIAGRAM LEGEND] Error creating legend: {legend_err}")
+                fig_legend = None
+            
+        else:
+            # If no edges, create a placeholder figure
+            fig7 = go.Figure()
+            fig7.add_annotation(
+                text="No edges found for chord diagram",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5,
+                showarrow=False
+            )
+            fig7.update_layout(
+                title="Pathway-Metabolite Chord Diagram",
+                xaxis=dict(visible=False),
+                yaxis=dict(visible=False),
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                width=800,
+                height=600
+            )
+            print("[CHORD DIAGRAM] No edges - placeholder created\n")
+            print("[CHORD DIAGRAM] No edges - placeholder created\n")
+    
+    except ImportError:
+        # pycirclize not installed - create placeholder with warning
+        print("[⚠️ CHORD DIAGRAM] pycirclize not installed. Install with: pip install pycirclize")
+        fig7 = go.Figure()
+        fig7.add_annotation(
+            text="⚠️ pycirclize library not installed\nInstall with: pip install pycirclize",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=14, color='red')
+        )
+        fig7.update_layout(
+            title="Pathway-Metabolite Chord Diagram (Requires pycirclize)",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            width=800,
+            height=600
+        )
+    except Exception as e:
+        # Catch any other errors and show warning
+        print(f"[⚠️ CHORD DIAGRAM] Error creating chord diagram: {e}")
+        fig7 = go.Figure()
+        fig7.add_annotation(
+            text=f"❌ Error creating chord diagram:\n{str(e)}",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5,
+            showarrow=False,
+            font=dict(size=12, color='red')
+        )
+        fig7.update_layout(
+            title="Pathway-Metabolite Chord Diagram (Error)",
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            width=800,
+            height=600
+        )
+    
+    return fig1, fig2, fig3, fig4, fig5, fig6, fig7, fig_legend
+
+def create_chord_diagram_legend(pathway_colors_dict, log2fc_min, log2fc_max):
+    """Create a standalone legend figure for the chord diagram.
+    
+    Args:
+        pathway_colors_dict: Dictionary mapping pathway names to their hex colors
+        log2fc_min: Minimum log2FC value for metabolite color scale
+        log2fc_max: Maximum log2FC value for metabolite color scale
+    
+    Returns:
+        matplotlib Figure object with the legend
     """
-    import plotly.graph_objects as go
-    fig = go.Figure()
-
-    # Edges (dashed)
-    fig.add_trace(go.Scatter(x=[None, None], y=[None, None], mode='lines',
-                             line=dict(color='orange', width=2.5, dash='8,8'),
-                             name='Predicted Activation', showlegend=True))
-    fig.add_trace(go.Scatter(x=[None, None], y=[None, None], mode='lines',
-                             line=dict(color='green', width=2.5, dash='8,8'),
-                             name='Predicted Inhibition', showlegend=True))
-
-    # Pathway diamonds
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                             marker=dict(symbol='diamond', size=14, color='orange', line=dict(width=0)),
-                             name='Activated Pathway', showlegend=True))
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                             marker=dict(symbol='diamond', size=12, color='blue', line=dict(width=0)),
-                             name='Inhibited Pathway', showlegend=True))
-
-    # Metabolites circles
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                             marker=dict(symbol='circle', size=14, color='#FF8C00', line=dict(width=0)),
-                             name='Upregulated Metabolites', showlegend=True))
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                             marker=dict(symbol='circle', size=12, color='green', line=dict(width=0)),
-                             name='Downregulated Metabolites', showlegend=True))
-    # No change (gray diamond)
-    fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                             marker=dict(symbol='diamond', size=12, color='#cccccc', line=dict(width=0)),
-                             name='No Change', showlegend=True))
-
-    # Upstream and Disease entries
-    if include_upstream:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                 marker=dict(symbol='triangle-up', size=14, color='#8e44ad', line=dict(width=0)),
-                                 name='Upstream Regulator', showlegend=True))
-    if include_diseases:
-        fig.add_trace(go.Scatter(x=[None], y=[None], mode='markers',
-                                 marker=dict(symbol='hexagon', size=14, color='#8e44ad', line=dict(width=0)),
-                                 name='Associated Disease', showlegend=True))
-
-    # Association edges (gray dashed)
-    if include_upstream or include_diseases:
-        fig.add_trace(go.Scatter(x=[None, None], y=[None, None], mode='lines',
-                                 line=dict(color='#888888', width=2.5, dash='8,8'),
-                                 name='Association', showlegend=True))
-
-    fig.update_layout(
-        showlegend=True,
-        legend=dict(orientation='v', yanchor='top', y=1, xanchor='left', x=0, font=dict(size=18, family='Arial Black')),
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
-        plot_bgcolor='white', paper_bgcolor='white',
-        width=680, height=460,
-        margin=dict(l=20, r=20, t=20, b=20)
-    )
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.colors as mcolors
+    
+    # Create figure
+    fig, (ax_pathways, ax_metabolites) = plt.subplots(1, 2, figsize=(10, 6), 
+                                                        gridspec_kw={'width_ratios': [2, 1]})
+    
+    # --- Left panel: Pathway Colors (Chord Colors) ---
+    ax_pathways.axis('off')
+    ax_pathways.set_xlim(0, 1)
+    ax_pathways.set_ylim(0, 1)
+    
+    # Title
+    ax_pathways.text(0.5, 0.95, 'Chord Colors = Pathways', 
+                     ha='center', va='top', fontsize=14, fontweight='bold')
+    
+    # Pathway legend entries
+    num_pathways = len(pathway_colors_dict)
+    if num_pathways > 0:
+        y_start = 0.88
+        y_step = min(0.06, 0.75 / max(1, num_pathways))  # Adjust spacing based on number
+        
+        for idx, (pathway_name, color) in enumerate(sorted(pathway_colors_dict.items())):
+            y_pos = y_start - idx * y_step
+            
+            # Color box
+            rect = mpatches.Rectangle((0.05, y_pos - 0.015), 0.08, 0.03, 
+                                       facecolor=color, edgecolor='black', linewidth=1)
+            ax_pathways.add_patch(rect)
+            
+            # Pathway name (truncate if too long)
+            display_name = pathway_name[:45] + '...' if len(pathway_name) > 45 else pathway_name
+            ax_pathways.text(0.16, y_pos, display_name, 
+                            va='center', ha='left', fontsize=10, fontweight='bold')
+    
+    # --- Right panel: Metabolite Log2FC Color Scale ---
+    ax_metabolites.axis('off')
+    ax_metabolites.set_xlim(0, 1)
+    ax_metabolites.set_ylim(0, 1)
+    
+    # Title
+    ax_metabolites.text(0.5, 0.95, 'Metabolite Colors', 
+                        ha='center', va='top', fontsize=14, fontweight='bold')
+    
+    # Create color gradient bar
+    gradient_height = 0.5
+    gradient_bottom = 0.25
+    n_colors = 100
+    
+    for i in range(n_colors):
+        norm_value = i / (n_colors - 1)
+        y_pos = gradient_bottom + (i / n_colors) * gradient_height
+        
+        # Calculate color (matching chord diagram gradient: green -> gray -> red)
+        if norm_value < 0.5:
+            t = norm_value * 2
+            r = int(0x22 + (t * 0xAA))
+            g = int(0xBB + (t * 0x11))
+            b = int(0x22 + (t * 0xAA))
+        else:
+            t = (norm_value - 0.5) * 2
+            r = int(0xCC + (t * 0x33))
+            g = int(0xCC - (t * 0xAA))
+            b = int(0xCC - (t * 0xAA))
+        
+        color = f'#{r:02x}{g:02x}{b:02x}'
+        rect = mpatches.Rectangle((0.3, y_pos), 0.4, gradient_height / n_colors,
+                                   facecolor=color, edgecolor='none')
+        ax_metabolites.add_patch(rect)
+    
+    # Border around gradient
+    border = mpatches.Rectangle((0.3, gradient_bottom), 0.4, gradient_height,
+                                 facecolor='none', edgecolor='black', linewidth=2)
+    ax_metabolites.add_patch(border)
+    
+    # Labels
+    ax_metabolites.text(0.15, gradient_bottom + gradient_height, f'{log2fc_max:.2f}',
+                        va='center', ha='right', fontsize=11, fontweight='bold')
+    ax_metabolites.text(0.15, gradient_bottom + gradient_height/2, '0.00',
+                        va='center', ha='right', fontsize=11, fontweight='bold')
+    ax_metabolites.text(0.15, gradient_bottom, f'{log2fc_min:.2f}',
+                        va='center', ha='right', fontsize=11, fontweight='bold')
+    
+    # Label text
+    ax_metabolites.text(0.5, 0.10, 'Log2 Fold Change',
+                        ha='center', va='top', fontsize=11, fontweight='bold')
+    ax_metabolites.text(0.5, 0.83, '(Upregulated)',
+                        ha='center', va='top', fontsize=9, color='#E53935')
+    ax_metabolites.text(0.5, gradient_bottom - 0.02, '(Downregulated)',
+                        ha='center', va='top', fontsize=9, color='#18A558')
+    
+    fig.patch.set_facecolor('white')
+    fig.tight_layout()
+    
     return fig
 
 def _safe_div(numerator, denominator, default=0.0):
@@ -5505,7 +5870,7 @@ def run_visualizations(excel_file="metabolite_pathways_annotated.xlsx",
 
 
         # Create individual summary plots for this group
-    fig1, fig2, fig3, fig4 = create_pathway_summary_plots(metabolites, pathway_stats)
+    fig1, fig2, fig3, fig4, fig5, fig6, fig7, fig_legend = create_pathway_summary_plots(metabolites, pathway_stats)
 
     # # Enrichment analysis: horizontal bar chart with enrichment ratios
     # fig5, enrichment_df = create_enrichment_bar_chart(
@@ -6391,6 +6756,71 @@ def main():
         pathway_max_chars=pathway_max_chars,
         pathway_max_lines=pathway_max_lines
     )
+
+def create_network_legend_figure(include_upstream=False, include_diseases=False):
+    """
+    Create a Plotly figure showing the legend for pathway network visualization.
+    
+    Args:
+        include_upstream: Whether upstream pathways are included
+        include_diseases: Whether disease pathways are included
+    
+    Returns:
+        plotly.graph_objects.Figure: A figure with legend information
+    """
+    import plotly.graph_objects as go
+    
+    # Create legend text
+    legend_text = "Network Legend<br><br>"
+    
+    legend_text += "<b>Node Colors:</b><br>"
+    legend_text += "🟢 Green: Upregulated (positive log2FC)<br>"
+    legend_text += "🔴 Red: Downregulated (negative log2FC)<br>"
+    legend_text += "⚪ Gray: No data/neutral<br><br>"
+    
+    legend_text += "<b>Node Size:</b><br>"
+    legend_text += "Larger nodes = higher statistical significance<br><br>"
+    
+    legend_text += "<b>Connections:</b><br>"
+    legend_text += "Edges show pathway-metabolite relationships<br>"
+    
+    if include_upstream:
+        legend_text += "🟦 Blue nodes: Upstream pathways<br>"
+    
+    if include_diseases:
+        legend_text += "🟥 Pink nodes: Disease-associated pathways<br>"
+    
+    # Create a simple Plotly figure with legend text
+    fig = go.Figure()
+    
+    # Add annotation with legend text
+    fig.add_annotation(
+        text=legend_text,
+        xref="paper", yref="paper",
+        x=0.5, y=0.5,
+        showarrow=False,
+        font=dict(size=12),
+        align="left",
+        bgcolor="rgba(240, 240, 240, 0.8)",
+        bordercolor="black",
+        borderwidth=1,
+        borderpad=10
+    )
+    
+    # Configure layout
+    fig.update_layout(
+        title="Pathway Network Legend",
+        xaxis=dict(visible=False),
+        yaxis=dict(visible=False),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        width=520,
+        height=360,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    
+    return fig
+
 
 if __name__ == "__main__":
     main()

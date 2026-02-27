@@ -15,7 +15,7 @@ block_cipher = None
 
 import sys
 import os
-from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 
 # Get the current directory
 spec_root = os.path.abspath(SPECPATH)
@@ -71,6 +71,9 @@ hiddenimports = [
     'tkinter.messagebox',
     'tkinter.scrolledtext',
     'tkinter.simpledialog',
+    'abc',
+    'argparse',
+    'io',
     
     # Data processing
     'pandas',
@@ -82,6 +85,13 @@ hiddenimports = [
     'numpy',
     'numpy.core._methods',
     'numpy.lib.format',
+    'numpy.fft',
+    'numpy.random',
+    'numpy.linalg',
+    
+    # Datetime
+    'datetime',
+    'time',
     
     # Excel support
     'openpyxl',
@@ -95,6 +105,9 @@ hiddenimports = [
     
     # Scientific computing
     'scipy',
+    'scipy._lib',
+    'scipy._lib.messagestream',
+    'scipy._cyutility',
     'scipy.stats',
     'scipy.stats._stats_py',
     'scipy.stats.distributions',
@@ -104,9 +117,15 @@ hiddenimports = [
     'scipy.special',
     'scipy.special.cython_special',
     'scipy.integrate',
+    'scipy.sparse',
+    'scipy.sparse._sparsetools',
+    'scipy.sparse.csgraph',
+    'scipy.sparse.csgraph._tools',
     
     # Machine learning
     'sklearn',
+    'sklearn.base',
+    'sklearn._cyutility',
     'sklearn.decomposition',
     'sklearn.decomposition._pca',
     'sklearn.preprocessing',
@@ -122,7 +141,19 @@ hiddenimports = [
     'sklearn.utils._heap',
     'sklearn.utils._sorting',
     'sklearn.utils._cython_blas',
+    'sklearn.utils.validation',
+    'sklearn.utils._isfinite',
+    'sklearn.utils._chunking',
+    'sklearn.utils._param_validation',
+    'sklearn.neighbors',
     'sklearn.neighbors._partition_nodes',
+    'sklearn.externals',
+    'sklearn.externals.array_api_compat',
+    'sklearn.externals.array_api_compat.numpy',
+    'sklearn.externals.array_api_compat.numpy.fft',
+    'sklearn.tree',
+    'sklearn.ensemble',
+    'sklearn.linear_model',
     
     # Statistics
     'statsmodels',
@@ -193,8 +224,27 @@ hiddenimports = [
     'requests.packages',
     'requests.packages.urllib3',
     'urllib3',
+    'urllib',
+    'urllib.request',
+    'urllib.error',
+    'urllib.parse',
     'certifi',
     'charset_normalizer',
+    
+    # Web and networking
+    'socket',
+    'webbrowser',
+    
+    # XML parsing
+    'xml',
+    'xml.etree',
+    'xml.etree.ElementTree',
+    'lxml',
+    'lxml.etree',
+    
+    # Crypto (if using license generation)
+    'cryptography',
+    'cryptography.fernet',
     
     # Utilities
     'pickle',
@@ -213,6 +263,7 @@ hiddenimports = [
     'typing_extensions',
     'collections',
     'collections.abc',
+    'collections.defaultdict',
     'itertools',
     'functools',
     'operator',
@@ -222,6 +273,10 @@ hiddenimports = [
     'queue',
     'enum',
     'uuid',
+    'glob',
+    'shutil',
+    'subprocess',
+    'platform',
     
     # Encoding
     'encodings',
@@ -245,6 +300,10 @@ hiddenimports = [
     'ctypes',
     'ctypes.wintypes',
     
+    # Image processing
+    'PIL',
+    'PIL.Image',
+    
     # User custom modules (ensure they're included)
     'gui',
     'gui.main',
@@ -256,21 +315,42 @@ hiddenimports = [
     'gui.tabs.data_cleaning_tab',
     'gui.tabs.database_setup_tab',
     'gui.tabs.help_tab',
+    'gui.tabs.multiomics_analysis_tab',
+    'gui.tabs.comparative_analysis_tab',
     'gui.shared',
     'gui.shared.base_tab',
     'gui.shared.data_manager',
     'gui.shared.utils',
     'gui.shared.column_assignment',
     'gui.shared.pairwise_column_mapper',
+    'main_script',
+    'main_script.metabolite_ID_annotator',
+    'main_script.metabolite_pathways_annotator',
+    'main_script.metabolite_pathway_network',
+    'main_script.metabolite_data_cleaner',
+    'main_script.fisher_ora_pathway_analysis',
+    'main_script.comparative_analysis',
+    'main_script.ml_pathway_models',
+    'main_script.lipid_search',
+    'main_script.database_builder',
+    'main_script.calculate_universe',
+    'main_script.factor_mapping_manager',
+    'main_script.interactive_network_viewer',
+    'main_script.help',
 ]
 
-# Collect all submodules for key packages
+# Collect all submodules for key packages - this ensures all Cython extensions are included
+hiddenimports += collect_submodules('sklearn')  # Critical: includes all sklearn Cython extensions
 hiddenimports += collect_submodules('scipy.stats')
-hiddenimports += collect_submodules('sklearn.utils')
+hiddenimports += collect_submodules('scipy.special')
+hiddenimports += collect_submodules('scipy.sparse')
 hiddenimports += collect_submodules('statsmodels.stats')
 hiddenimports += collect_submodules('matplotlib.backends')
 hiddenimports += collect_submodules('networkx')
 hiddenimports += collect_submodules('plotly')
+hiddenimports += collect_submodules('pandas.io')
+hiddenimports += collect_submodules('numpy.core')
+hiddenimports += collect_submodules('numpy.lib')
 
 # Add user custom analysis modules
 hiddenimports += [
@@ -287,11 +367,18 @@ hiddenimports += [
     'main_script.help',
 ]
 
+# Collect binaries from packages with compiled extensions
+from PyInstaller.utils.hooks import collect_dynamic_libs
+binaries = []
+binaries += collect_dynamic_libs('sklearn')
+binaries += collect_dynamic_libs('scipy')
+binaries += collect_dynamic_libs('numpy')
+
 # Analysis of main script and all dependencies
 a = Analysis(
     ['metabograph.py'],
     pathex=[spec_root],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -332,14 +419,14 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # DISABLED: UPX can corrupt scipy/numpy DLLs causing crashes on other machines
     console=True,  # Set to False for GUI app (no console window)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # Add path to .ico file if you have one
+    icon='logo.ico',
     version=None,  # Add version info file if desired
 )
 
@@ -350,7 +437,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,  # DISABLED: UPX can corrupt scipy/numpy DLLs causing crashes on other machines
     upx_exclude=[],
     name='MetaboGraph'
 )

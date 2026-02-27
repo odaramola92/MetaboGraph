@@ -20,7 +20,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
-from matplotlib_venn import venn2, venn3
+from matplotlib.patches import Circle
 
 from gui.shared.base_tab import BaseTab, _setup_global_styles
 
@@ -265,7 +265,7 @@ class ComparativeAnalysisTab(BaseTab):
         tk.Entry(topn_row, textvariable=self.top_n_pathways, width=6).pack(side="left", padx=(5, 0))
         tk.Label(topn_row, text="(for heatmaps)", bg="#f0f0f0", font=("Arial", 8), fg="#666").pack(side="left", padx=(5, 0))
 
-        # Pathway filter dropdown
+        # Pathway filter dropdown (for heatmaps only)
         filter_row = tk.Frame(settings_frame, bg="#f0f0f0")
         filter_row.pack(fill="x", padx=10, pady=5)
         tk.Label(filter_row, text="Pathway filter:", bg="#f0f0f0", font=("Arial", 9)).pack(side="left")
@@ -277,6 +277,7 @@ class ComparativeAnalysisTab(BaseTab):
             width=18,
         )
         self.filter_dropdown.pack(side="left", padx=(5, 0))
+        tk.Label(filter_row, text="(for heatmaps)", bg="#f0f0f0", font=("Arial", 8), fg="#666").pack(side="left", padx=(5, 0))
 
         # Figure size controls
         size_row = tk.Frame(settings_frame, bg="#f0f0f0")
@@ -845,6 +846,14 @@ class ComparativeAnalysisTab(BaseTab):
         masked_data = np.ma.masked_invalid(display_matrix.values)
         im = ax.imshow(masked_data, aspect="auto", cmap=cmap, vmin=-vmax, vmax=vmax)
 
+        # Add black horizontal lines between rows for better visibility
+        for i in range(len(display_matrix.index) + 1):
+            ax.axhline(y=i - 0.5, color='black', linewidth=0.5)
+        
+        # Add black vertical lines between columns to separate groups
+        for i in range(len(display_matrix.columns) + 1):
+            ax.axvline(x=i - 0.5, color='black', linewidth=0.5)
+
         ax.set_xticks(range(len(display_matrix.columns)))
         ax.set_xticklabels(display_matrix.columns, rotation=45, ha="right", fontsize=10, fontweight='bold')
         ax.set_yticks(range(len(display_matrix.index)))
@@ -878,8 +887,35 @@ class ComparativeAnalysisTab(BaseTab):
 
         heatmap = heatmap.replace([np.inf, -np.inf], np.nan).dropna(how='all')
         
-        top_n = min(50, len(heatmap))
-        heatmap = heatmap.sort_values(by=list(heatmap.columns), ascending=False, na_position='last').head(top_n)
+        # Identify common pathways (present in ALL datasets - no NaN values)
+        common_mask = heatmap.notna().all(axis=1)
+        common_pathways = heatmap[common_mask]
+        
+        # Apply common pathways filter if selected
+        common_only = self.pathway_filter.get() == "Common Pathways Only"
+        if common_only:
+            heatmap = common_pathways
+            self._log(f"📊 Filtering to {len(heatmap)} common pathways")
+            # Sort by max -log10(p) value
+            heatmap['_sort'] = heatmap.abs().max(axis=1)
+            heatmap = heatmap.sort_values('_sort', ascending=False).drop('_sort', axis=1)
+        else:
+            # Sort unique pathways by max -log10(p) value
+            unique_pathways = heatmap[~common_mask].copy()
+            if len(unique_pathways) > 0:
+                unique_pathways['_sort'] = unique_pathways.max(axis=1)
+                unique_pathways = unique_pathways.sort_values('_sort', ascending=False).drop('_sort', axis=1)
+            # Sort common pathways by max -log10(p) value
+            if len(common_pathways) > 0:
+                common_pathways = common_pathways.copy()
+                common_pathways['_sort'] = common_pathways.max(axis=1)
+                common_pathways = common_pathways.sort_values('_sort', ascending=False).drop('_sort', axis=1)
+            # Concatenate: common pathways first, then unique
+            heatmap = pd.concat([common_pathways, unique_pathways])
+            self._log(f"📊 {len(common_pathways)} common + {len(unique_pathways)} unique pathways")
+        
+        top_n = min(int(self.top_n_pathways.get()), len(heatmap))
+        heatmap = heatmap.head(top_n)
         self.heatmap_matrix = heatmap
 
         fig = Figure(figsize=(width, height))
@@ -893,6 +929,14 @@ class ComparativeAnalysisTab(BaseTab):
         # Convert to masked array to handle NaN
         masked_data = np.ma.masked_invalid(heatmap.values)
         im = ax.imshow(masked_data, aspect="auto", cmap=cmap)
+
+        # Add black horizontal lines between rows for better visibility
+        for i in range(len(heatmap.index) + 1):
+            ax.axhline(y=i - 0.5, color='black', linewidth=0.5)
+        
+        # Add black vertical lines between columns to separate groups
+        for i in range(len(heatmap.columns) + 1):
+            ax.axvline(x=i - 0.5, color='black', linewidth=0.5)
 
         ax.set_xticks(range(len(heatmap.columns)))
         ax.set_xticklabels(heatmap.columns, rotation=45, ha="right", fontsize=10, fontweight='bold')
@@ -1071,44 +1115,80 @@ class ComparativeAnalysisTab(BaseTab):
         ax = fig.add_subplot(111)
 
         if len(sig_sets) == 2:
-            # Calculate actual counts for equal-sized circles
-            venn = venn2(sig_sets, set_labels=set_labels, ax=ax, set_colors=('#2196f3', '#ff9800'), alpha=0.6)
-            # Color the overlap region
-            if venn.get_patch_by_id('11'):
-                venn.get_patch_by_id('11').set_color('#4caf50')
-                venn.get_patch_by_id('11').set_alpha(0.6)
-            # Make set labels bold
-            # Make set labels bold
-            for text in venn.set_labels:
-                if text:
-                    text.set_fontsize(10)
-                    text.set_fontweight('bold')
-            # Make subset labels bold
-            for text in venn.subset_labels:
-                if text:
-                    text.set_fontsize(9)
-                    text.set_fontweight('bold')
+            # Draw equal-sized circles manually (no proportional sizing)
+            r = 1.0
+            d = 1.2  # center distance
+            c1 = (-d/2, 0.0)
+            c2 = (d/2, 0.0)
+            
+            # circles
+            circ1 = Circle(c1, r, linewidth=1.5, edgecolor="black", facecolor="#2196f3", alpha=0.6)
+            circ2 = Circle(c2, r, linewidth=1.5, edgecolor="black", facecolor="#ff9800", alpha=0.6)
+            ax.add_patch(circ1)
+            ax.add_patch(circ2)
+            
+            # counts
+            only1 = len(sig_sets[0] - sig_sets[1])
+            only2 = len(sig_sets[1] - sig_sets[0])
+            both = len(sig_sets[0] & sig_sets[1])
+            
+            # labels for counts
+            ax.text(c1[0] - 0.45, 0.0, str(only1), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(c2[0] + 0.45, 0.0, str(only2), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(0.0, 0.0, str(both), ha="center", va="center", fontsize=16, fontweight='bold')
+            
+            # set titles
+            ax.text(c1[0], -1.35, set_labels[0], ha="center", va="top", fontsize=14, fontweight='bold')
+            ax.text(c2[0], -1.35, set_labels[1], ha="center", va="top", fontsize=14, fontweight='bold')
+            
+            # frame/layout
+            ax.set_aspect("equal")
+            ax.set_xlim(-2.2, 2.2)
+            ax.set_ylim(-1.8, 1.8)
+            ax.axis("off")
+            
         else:  # 3 datasets
-            venn = venn3(sig_sets, set_labels=set_labels, ax=ax, set_colors=('#2196f3', '#ff9800', '#9c27b0'), alpha=0.6)
-            # Color the overlap regions
-            colors = {'110': '#4caf50', '101': '#00bcd4', '011': '#ff5722', '111': '#607d8b'}
-            for region_id, color in colors.items():
-                patch = venn.get_patch_by_id(region_id)
-                if patch:
-                    patch.set_color(color)
-                    patch.set_alpha(0.6)
-            # Make set labels bold
-            for text in venn.set_labels:
-                if text:
-                    text.set_fontsize(10)
-                    text.set_fontweight('bold')
-            # Make subset labels bold
-            for text in venn.subset_labels:
-                if text:
-                    text.set_fontsize(9)
-                    text.set_fontweight('bold')
+            # Draw equal-sized circles manually in triangle layout
+            r = 1.0
+            cA = (-0.7, 0.4)   # Top-left
+            cB = (0.7, 0.4)    # Top-right
+            cC = (0.0, -0.6)   # Bottom center
+            
+            circA = Circle(cA, r, linewidth=1.5, edgecolor="black", facecolor="#2196f3", alpha=0.6)
+            circB = Circle(cB, r, linewidth=1.5, edgecolor="black", facecolor="#ff9800", alpha=0.6)
+            circC = Circle(cC, r, linewidth=1.5, edgecolor="black", facecolor="#9c27b0", alpha=0.6)
+            for c in (circA, circB, circC):
+                ax.add_patch(c)
+            
+            # region counts
+            Aonly = len(sig_sets[0] - sig_sets[1] - sig_sets[2])
+            Bonly = len(sig_sets[1] - sig_sets[0] - sig_sets[2])
+            Conly = len(sig_sets[2] - sig_sets[0] - sig_sets[1])
+            AB = len((sig_sets[0] & sig_sets[1]) - sig_sets[2])
+            AC = len((sig_sets[0] & sig_sets[2]) - sig_sets[1])
+            BC = len((sig_sets[1] & sig_sets[2]) - sig_sets[0])
+            ABC = len(sig_sets[0] & sig_sets[1] & sig_sets[2])
+            
+            # text positions for counts
+            ax.text(cA[0] - 0.5, cA[1] + 0.15, str(Aonly), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(cB[0] + 0.5, cB[1] + 0.15, str(Bonly), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(cC[0], cC[1] - 0.5, str(Conly), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(0.0, 0.75, str(AB), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(-0.55, -0.15, str(AC), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(0.55, -0.15, str(BC), ha="center", va="center", fontsize=16, fontweight='bold')
+            ax.text(0.0, 0.0, str(ABC), ha="center", va="center", fontsize=17, fontweight='bold')
+            
+            # set titles
+            ax.text(cA[0], cA[1] + 1.2, set_labels[0], ha="center", va="bottom", fontsize=14, fontweight='bold')
+            ax.text(cB[0], cB[1] + 1.2, set_labels[1], ha="center", va="bottom", fontsize=14, fontweight='bold')
+            ax.text(cC[0], cC[1] - 1.2, set_labels[2], ha="center", va="top", fontsize=14, fontweight='bold')
+            
+            ax.set_aspect("equal")
+            ax.set_xlim(-2.0, 2.0)
+            ax.set_ylim(-2.0, 2.0)
+            ax.axis("off")
 
-        ax.set_title(f'Significant Pathway Overlap (p ≤ {p_thr})', fontsize=12, fontweight='bold')
+        ax.set_title(f'Significant Pathway Overlap (p ≤ {p_thr})', fontsize=14, fontweight='bold')
 
         # Calculate and log overlap statistics
         if len(sig_sets) >= 2:

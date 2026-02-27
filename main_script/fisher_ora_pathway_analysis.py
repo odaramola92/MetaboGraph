@@ -142,7 +142,7 @@ def prepare_ora_universe(df: pd.DataFrame, pathway_database: Dict[str, List[str]
                           pvalue_threshold: float = 0.05,
                           log2fc_threshold: float = 0.0,
                           species: str = 'Homo sapiens',
-                          column_mapping: Dict[str, str] = None) -> Tuple[Set[str], Set[str], Dict[str, Set[str]], Dict[str, Dict[str, float]], int]:
+                          column_mapping: Optional[Dict[str, str]] = None) -> Tuple[Set[str], Set[str], Dict[str, Set[str]], Dict[str, Dict[str, float]], int]:
     """
     Prepare data for Over-Representation Analysis (ORA).
     
@@ -561,7 +561,7 @@ def calculate_pathway_statistics_fisher_ora(df: pd.DataFrame,
                                              pvalue_threshold: float = 0.05,
                                              log2fc_threshold: float = 0.0,
                                              z_threshold: float = 1.0,
-                                             fdr_method: str = 'fdr_bh',
+                                             fdr_method: Optional[str] = 'fdr_bh',
                                              max_total_pathways: Optional[int] = 25,
                                              species: str = 'Homo sapiens',
                                              auto_adjust_pvalue_threshold: bool = True,
@@ -961,20 +961,20 @@ def calculate_pathway_statistics_fisher_ora(df: pd.DataFrame,
         logger.info(f"      21+ members: {size_21_plus} pathways")
     
     # Show some examples of excluded pathways
-    if excluded_pathways:
-        logger.info(f"\n⚠️  EXAMPLES OF EXCLUDED PATHWAYS (first 10):")
-        for exc in excluded_pathways[:10]:
-            logger.info(f"      • {exc['pathway_name']}: {exc['n_members']} members ({exc['reason']})")
-        if len(excluded_pathways) > 10:
-            logger.info(f"      ... and {len(excluded_pathways) - 10} more")
+    # if excluded_pathways:
+    #     logger.info(f"\n⚠️  EXAMPLES OF EXCLUDED PATHWAYS (first 10):")
+    #     for exc in excluded_pathways[:10]:
+    #         logger.info(f"      • {exc['pathway_name']}: {exc['n_members']} members ({exc['reason']})")
+    #     if len(excluded_pathways) > 10:
+    #         logger.info(f"      ... and {len(excluded_pathways) - 10} more")
     
-    # Show some examples of included pathways
-    if pathway_results:
-        logger.info(f"\n✅ EXAMPLES OF TESTED PATHWAYS (first 10):")
-        for res in pathway_results[:10]:
-            logger.info(f"      • {res['pathway_name']}: {res['n_metabolites']} members, p={res['fisher_pvalue']:.2e}")
-        if len(pathway_results) > 10:
-            logger.info(f"      ... and {len(pathway_results) - 10} more")
+    # # Show some examples of included pathways
+    # if pathway_results:
+    #     logger.info(f"\n✅ EXAMPLES OF TESTED PATHWAYS (first 10):")
+    #     for res in pathway_results[:10]:
+    #         logger.info(f"      • {res['pathway_name']}: {res['n_metabolites']} members, p={res['fisher_pvalue']:.2e}")
+    #     if len(pathway_results) > 10:
+    #         logger.info(f"      ... and {len(pathway_results) - 10} more")
     
     logger.info(f"\n{'='*70}\n")
     logger.info(f"Tested {len(pathway_results)} pathways (≥{min_metabolites} members)")
@@ -1097,7 +1097,7 @@ def calculate_pathway_statistics_fisher_ora(df: pd.DataFrame,
 def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
                                       min_metabolites: int = 2,
                                       pvalue_threshold: float = 0.05,
-                                      fdr_method: str = 'fdr_bh',
+                                      fdr_method: Optional[str] = 'fdr_bh',
                                       weight_mode: str = 'signed_p',
                                       z_threshold: float = 2.0,
                                       max_total_pathways: Optional[int] = None,

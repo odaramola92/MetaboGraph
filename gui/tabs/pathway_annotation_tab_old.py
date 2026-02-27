@@ -587,34 +587,16 @@ class PathwayAnnotationTab(BaseTab):
             traceback.print_exc()
     
     def _switch_to_network_tab(self):
-        """Switch to Network Analysis subtab.
-
-        Prefer calling the parent container's helper if available.  The hardcoded
-        index used previously became invalid after adding the Comparative tab,
-        which pushed Network to position 1 (and Multi-Omics to 2).  Using the
-        parent's `switch_to_network_tab` method guarantees we end up on the
-        correct tab regardless of order changes.
-        """
+        """Switch to Network Analysis subtab"""
         try:
-            # Try parent object method first (PathwayAnalysisParentTab)
+            # Get parent tab (PathwayAnalysisParentTab)
             if hasattr(self, 'frame') and hasattr(self.frame, 'master'):
-                parent = self.frame.master
-                if hasattr(parent, 'switch_to_network_tab'):
-                    parent.switch_to_network_tab()
-                    print("[DEBUG] Switched to Network Analysis tab via parent helper")
-                    return
-                # Fallback: old logic using direct notebook indices
-                if isinstance(parent, ttk.Notebook):
-                    # previous assumption was index 2, but tabs may have been
-                    # reordered; network should now be index 1 in current layout
-                    # (annotation=0, network=1, multiomics=2, comparative=3)
-                    try:
-                        parent.select(1)
-                        print("[DEBUG] Switched to Network Analysis tab (fallback index=1)")
-                        return
-                    except Exception:
-                        pass
-            print("[DEBUG] Could not switch to Network Analysis tab (no parent helper)")
+                parent_notebook = self.frame.master
+                if isinstance(parent_notebook, ttk.Notebook):
+                    # Switch to third tab (Network Analysis) - index 2
+                    # Tab 0: Pathway Annotation, Tab 1: Multi-Omics, Tab 2: Network
+                    parent_notebook.select(2)
+                    print("[DEBUG] Switched to Network Analysis tab")
         except Exception as e:
             print(f"[ERROR] Failed to switch tabs: {e}")
     
@@ -2057,19 +2039,14 @@ class PathwayAnnotationTab(BaseTab):
                     # Rename columns in dataframe based on assignments for downstream compatibility
                     # Convert spaces to underscores for standard column names (HMDB ID → HMDB_ID)
                     for standard_name, user_column in self.verified_assignments.items():
-                        if not user_column or user_column not in df.columns:
-                            continue
-                        # Do not convert the feature ID column to 'Feature_ID'; leave as-is
-                        # so that it remains identifiable when annotation runs later.
-                        if standard_name == 'Feature ID':
-                            continue
-                        # Convert standard name to underscore version for downstream code
-                        underscore_name = standard_name.replace(' ', '_')
-                        if user_column != underscore_name:
-                            # Rename user's column to underscore version
-                            df.rename(columns={user_column: underscore_name}, inplace=True)
-                            self.root.after(0, lambda sn=underscore_name, uc=user_column: 
-                                self.pathway_progress_text.insert(tk.END, f"   📝 Renamed '{uc}' → '{sn}'\n"))
+                        if user_column and user_column in df.columns:
+                            # Convert standard name to underscore version for downstream code
+                            underscore_name = standard_name.replace(' ', '_')
+                            if user_column != underscore_name:
+                                # Rename user's column to underscore version
+                                df.rename(columns={user_column: underscore_name}, inplace=True)
+                                self.root.after(0, lambda sn=underscore_name, uc=user_column: 
+                                    self.pathway_progress_text.insert(tk.END, f"   📝 Renamed '{uc}' → '{sn}'\n"))
                     
                     # Store renamed dataframe
                     if result.get('dataframe') is not None:
@@ -2536,21 +2513,18 @@ class PathwayAnnotationTab(BaseTab):
             # Normalize column names
             df.columns = df.columns.map(lambda c: str(c).strip())
 
-            # If user verified columns, normalize them to underscore names for downstream checks
-            # NOTE: feature ID column is treated specially because the mapper requires a 'Name' column later.
+            # If user verified columns, rename all assigned columns to their standard underscore names for downstream compatibility
             if hasattr(self, 'verified_assignments') and self.verified_assignments:
                 try:
                     for standard_name, user_column in self.verified_assignments.items():
-                        if not user_column or user_column not in df.columns:
-                            continue
-                        # Do NOT convert Feature ID to "Feature_ID"; leave it alone
-                        # so that the later renaming logic can turn it into 'Name'.
-                        if standard_name == 'Feature ID':
-                            continue
-                        underscore_name = standard_name.replace(' ', '_')
-                        if user_column != underscore_name:
-                            df.rename(columns={user_column: underscore_name}, inplace=True)
-                except Exception:
+                        if user_column and user_column in df.columns:
+                            underscore_name = standard_name.replace(' ', '_')
+                            if user_column != underscore_name:
+                                df.rename(columns={user_column: underscore_name}, inplace=True)
+                                # Optionally log the renaming
+                                # log_message(f"📝 Renamed '{user_column}' → '{underscore_name}'")
+                except Exception as e:
+                    log_message(f"⚠️ Column renaming error: {e}\n")
                     pass
             
             # Get current mode
@@ -2564,33 +2538,8 @@ class PathwayAnnotationTab(BaseTab):
             log_message(f"✅ All {len(df)} metabolites will be annotated\n")
             log_message(f"   (P-value/Log2FC not required for annotation)\n\n")
             
-            # ===== EARLY CHECK: Detect existing pathway annotation to SKIP re-annotation =====
-            # Check for a broad set of common pathway columns (variants included)
-            pathway_column_variants = [
-                'HMDB_Pathways', 'PathBank_Pathways', 'PathBank_Pathways', 'PathBank_Pathways',
-                'SMPDB_Pathways', 'SMP_Pathways', 'SMPDB_Pathways', 'WikiPathways', 'Metabolika_Pathways',
-                'Reactome_Pathways', 'KEGG_Pathways', 'All_Pathways', 'All_Pathways_Display', 'total_pathways'
-            ]
-            present_annot_cols = [c for c in pathway_column_variants if c in df.columns]
-            skip_annotation_early = False
-            if present_annot_cols:
-                # Skip annotation if any aggregated column exists with data
-                agg_cols = {'All_Pathways', 'All_Pathways_Display'}
-                agg_present = [c for c in present_annot_cols if c in agg_cols]
-                if agg_present:
-                    try:
-                        has_any = any(df[c].notna().any() for c in agg_present)
-                    except Exception:
-                        has_any = False
-                    if has_any:
-                        skip_annotation_early = True
-                        log_message(f"✅ Detected aggregated pathway columns: {agg_present}\n")
-                        log_message("   Will SKIP re-annotation and proceed directly to reclassification/statistics.\n\n")
-                else:
-                    log_message(f"ℹ️ Found pathway columns {present_annot_cols} but no aggregated field; annotation will run\n")
-
             # ===== LIPID MODE: Check if IDs already present, skip re-annotation if yes =====
-            if mode == 'lipid' and not skip_annotation_early:
+            if mode == 'lipid':
                 # Check if lipid IDs are already present from ID annotation tab
                 id_cols_to_check = ['LipidMaps_ID', 'KEGG_ID', 'HMDB_ID', 'PubChem_CID', 'ChEBI_ID']
 
@@ -2643,7 +2592,6 @@ class PathwayAnnotationTab(BaseTab):
                     log_message(f"\n🎯 LIPID IDs DETECTED - Proceeding with pathway annotation\n")
                     log_message(f"   ID columns present: {existing_id_cols}\n")
                     log_message(f"   Proceeding directly to pathway annotation...\n\n")
-                    skip_annotation_early = True
                     self.root.after(0, lambda: self.update_pathway_progress_with_percentage(20, "Lipid IDs detected - proceeding with pathway annotation"))
                 else:
                     # No existing IDs found - STOP and tell user to run ID annotation first
@@ -2710,239 +2658,12 @@ class PathwayAnnotationTab(BaseTab):
             # Those are comparison columns that the network tab will handle
             # Just focus on adding pathway annotations
             
-            # Check if pathway annotation is needed
-            self.root.after(0, lambda: self.update_pathway_progress_with_percentage(15, "Checking existing pathway data..."))
-            pathway_cols = ['HMDB_Pathways', 'PathBank_Pathways', 'SMP_Pathways', 'WikiPathways', 
-                           'Metabolika_Pathways', 'All_Pathways', 'All_Pathways_Display']
-            present_pathway_cols = [c for c in pathway_cols if c in df.columns]
-            
-            skip_annotation = False
-            if present_pathway_cols:
-                # Always skip if an aggregated column is present and contains data
-                agg_cols = {'All_Pathways', 'All_Pathways_Display'}
-                agg_present = [c for c in present_pathway_cols if c in agg_cols]
-                if agg_present:
-                    has_pathway_data = False
-                    for col in agg_present:
-                        if df[col].notna().any():
-                            has_pathway_data = True
-                            break
-                else:
-                    has_pathway_data = False
-                
-                if has_pathway_data:
-                    skip_annotation = True
-                    log_message(f"✅ Found existing pathway data!\n")
-                    log_message(f"   Columns: {present_pathway_cols}\n")
-                    log_message(f"   Skipping annotation step and proceeding directly to statistics...\n\n")
-            
-            if skip_annotation:
-                # Use existing pathway data but enforce filtering and disease relocation
-                log_message(f"📊 Using annotated data from loaded file\n")
-                log_message(f"   Skipping database loading (not needed for statistics only)\n")
-                
-                # CRITICAL CHECK: If Associated_Diseases already exists with data, don't reclassify!
-                # Reclassification is only needed for "dirty" data where diseases are still mixed in pathway columns
-                has_diseases_column = 'Associated_Diseases' in df.columns
-                diseases_populated = False
-                if has_diseases_column:
-                    non_empty = df['Associated_Diseases'].fillna('').astype(str).str.strip()
-                    non_empty = non_empty[(non_empty != '') & (non_empty.str.lower() != 'nan')]
-                    diseases_populated = len(non_empty) > 0
-                
-                if has_diseases_column and diseases_populated:
-                    # Data already has diseases separated - use as-is
-                    log_message(f"✓ Associated_Diseases column already populated ({len(non_empty)} metabolites)\n")
-                    log_message(f"   Skipping reclassification (data already clean)\n\n")
-                    # Still sanitize any pre-existing 'All_Pathways' semicolon fragmentation
-                    try:
-                        from main_script.metabolite_pathways_annotator import MetabolitePathwayMapper
-                        if 'All_Pathways' in df.columns:
-                            cleaned_count = 0
-                            examples = []
-                            for idx, val in df['All_Pathways'].fillna('').astype(str).items():
-                                if not val.strip():
-                                    continue
-                                new_val = MetabolitePathwayMapper.group_semicolon_fragments(val)
-                                if new_val != val:
-                                    cleaned_count += 1
-                                    if len(examples) < 5:
-                                        examples.append((val, new_val))
-                                    df.at[idx, 'All_Pathways'] = new_val
-                            if cleaned_count > 0:
-                                log_message(f"🔧 Cleaned {cleaned_count} pre-existing 'All_Pathways' entries by grouping semicolon fragments\n")
-                                for old, new in examples:
-                                    log_message(f"   • Example: '{old}' → '{new}'\n")
-                    except Exception as _e:
-                        log_message(f"⚠️ Warning: Could not run All_Pathways cleaning: {_e}\n")
+            # Always run pathway annotation, even if pathway columns already exist
+            self.root.after(0, lambda: self.update_pathway_progress_with_percentage(15, "Running pathway annotation..."))
 
-                    annotated_df = df
-                else:
-                    # Need to reclassify diseases from pathway columns
-                    log_message(f"⚠️ Associated_Diseases empty or missing - will reclassify from pathway columns\n")
-                    
-                    try:
-                        # For skip_annotation path, we don't need full annotator initialization
-                        # Just use the reclassify function directly
-                        from main_script.metabolite_pathways_annotator import apply_annotation_filters, is_disease_pathway
-                        
-                        # Force rebuild All_Pathways columns to ensure disease filtering
-                        # Drop old All_Pathways columns if they exist (may contain diseases)
-                        df_clean = df.copy()
-
-                        # Sanitize individual pathway columns for semicolon fragmentation
-                        try:
-                            from main_script.metabolite_pathways_annotator import MetabolitePathwayMapper
-                            for pcol in pathway_cols:
-                                if pcol in df_clean.columns:
-                                    def _maybe_group(v):
-                                        try:
-                                            if pd.isna(v):
-                                                return v
-                                            s = str(v)
-                                            if ';' in s and len(s) > 3:
-                                                return MetabolitePathwayMapper.group_semicolon_fragments(s)
-                                        except Exception:
-                                            pass
-                                        return v
-                                    df_clean[pcol] = df_clean[pcol].apply(_maybe_group)
-                        except Exception as _e:
-                            log_message(f"⚠️ Warning: Could not sanitize pathway columns: {_e}\n")
-                        
-                        # Reclassify diseases using the pure function approach
-                        # Build All_Pathways from individual pathway columns
-                        pathway_cols = ['HMDB_Pathways', 'PathBank_Pathways', 'SMPDB_Pathways', 
-                                       'WikiPathways', 'Metabolika_Pathways', 'Reactome_Pathways', 'KEGG_Pathways']
-                        
-                        # Also check for Reactome_Disease column
-                        disease_cols = ['Reactome_Disease']
-                        
-                        def reclassify_for_stats(row):
-                            """Apply disease filtering to pathway columns"""
-                            import re
-                            all_pathways = []
-                            all_diseases = []
-                            
-                            # DEBUG: Track input
-                            debug_info = {'metabolite': row.get('Name', 'Unknown'), 'before': len(all_pathways)}
-                            
-                            # First, collect diseases from disease-specific columns
-                            for col in disease_cols:
-                                if col in row.index and pd.notna(row[col]):
-                                    val = str(row[col])
-                                    if val and val.lower() not in ['nan', 'none', '']:
-                                        # Split by both ; and | delimiters
-                                        diseases = [d.strip() for d in re.split(r'[;|]', val) if d.strip()]
-                                        all_diseases.extend(diseases)
-                            
-                            # Then process pathway columns
-                            for col in pathway_cols:
-                                if col in row.index and pd.notna(row[col]):
-                                    val = str(row[col])
-                                    if val and val.lower() not in ['nan', 'none', '']:
-                                        # Split by both ; and | delimiters (HMDB uses |, others use ;)
-                                        pathways = [p.strip() for p in re.split(r'[;|]', val) if p.strip()]
-                                        # DEBUG: Track before filtering
-                                        before_filter = len(pathways)
-                                        # Apply disease filtering
-                                        clean_pathways, diseases = apply_annotation_filters(pathways)
-                                        # DEBUG: Track after filtering
-                                        after_filter = len(clean_pathways)
-                                        if before_filter != after_filter:
-                                            debug_info[col] = f"{before_filter}→{after_filter}"
-                                        all_pathways.extend(clean_pathways)
-                                        all_diseases.extend(diseases)
-                            
-                            # DEBUG: Track before deduplication
-                            debug_info['total_collected'] = len(all_pathways)
-                            
-                            # Deduplicate
-                            unique_pathways = []
-                            seen_pathways = set()
-                            duplicates_found = []
-                            for p in all_pathways:
-                                p_lower = p.lower()
-                                if p_lower not in seen_pathways:
-                                    seen_pathways.add(p_lower)
-                                    unique_pathways.append(p)
-                                else:
-                                    duplicates_found.append(p)
-                            
-                            # DEBUG: Track deduplication
-                            debug_info['after_dedup'] = len(unique_pathways)
-                            debug_info['duplicates_removed'] = len(duplicates_found)
-                            if duplicates_found:
-                                debug_info['duplicate_examples'] = duplicates_found[:3]
-                            
-                            unique_diseases = []
-                            seen_diseases = set()
-                            for d in all_diseases:
-                                d_lower = d.lower()
-                                if d_lower not in seen_diseases:
-                                    seen_diseases.add(d_lower)
-                                    unique_diseases.append(d)
-                            
-                            # Use proper delimiters: ; for pathways, | for diseases
-                            pathways_str = ';'.join(unique_pathways) if unique_pathways else ''
-                            diseases_str = ' | '.join(unique_diseases) if unique_diseases else ''
-                            
-                            return pathways_str, diseases_str, debug_info
-                        
-                        # Apply reclassification
-                        log_message(f"\n📋 Reclassifying diseases from pathway columns...\n")
-                        
-                        # DEBUG: Check BEFORE reclassification
-                        if 'Associated_Diseases' in df_clean.columns:
-                            before_count = (df_clean['Associated_Diseases'].fillna('').astype(str).str.strip() != '').sum()
-                            before_sample = df_clean['Associated_Diseases'].dropna().head(2).tolist()
-                            log_message(f"   BEFORE: {before_count} metabolites with Associated_Diseases\n")
-                            log_message(f"   BEFORE sample: {before_sample}\n")
-                        
-                        result = df_clean.apply(reclassify_for_stats, axis=1, result_type='expand')
-                        df_clean['All_Pathways'] = result[0]
-                        df_clean['Associated_Diseases'] = result[1]
-                        debug_info_list = result[2].tolist()
-                        
-                        # DEBUG: Analyze deduplication results
-                        total_duplicates_removed = sum(d.get('duplicates_removed', 0) for d in debug_info_list)
-                        metabolites_with_duplicates = sum(1 for d in debug_info_list if d.get('duplicates_removed', 0) > 0)
-                        
-                        log_message(f"\n🔍 DEDUPLICATION ANALYSIS:\n")
-                        log_message(f"   • Total duplicate pathways removed: {total_duplicates_removed}\n")
-                        log_message(f"   • Metabolites with duplicates: {metabolites_with_duplicates}/{len(debug_info_list)}\n")
-                        
-                        # Show examples of duplicates removed
-                        examples_shown = 0
-                        for d in debug_info_list:
-                            if d.get('duplicates_removed', 0) > 0 and examples_shown < 5:
-                                log_message(f"   • {d.get('metabolite', 'Unknown')}: {d.get('total_collected', 0)} collected → {d.get('after_dedup', 0)} unique\n")
-                                if 'duplicate_examples' in d:
-                                    log_message(f"     Duplicates: {', '.join(d['duplicate_examples'])}\n")
-                                examples_shown += 1
-                        
-                        # DEBUG: Check AFTER reclassification
-                        after_count = (df_clean['Associated_Diseases'].fillna('').astype(str).str.strip() != '').sum()
-                        after_sample = df_clean['Associated_Diseases'].dropna().head(2).tolist()
-                        log_message(f"\n   AFTER: {after_count} metabolites with Associated_Diseases\n")
-                        log_message(f"   AFTER sample: {after_sample}\n")
-                        
-                        # Count diseases
-                        diseases_count = (df_clean['Associated_Diseases'].fillna('').astype(str).str.strip() != '').sum()
-                        pathways_count = (df_clean['All_Pathways'].fillna('').astype(str).str.strip() != '').sum()
-                        log_message(f"\n   ✓ Reclassification complete:\n")
-                        log_message(f"      - {diseases_count} metabolites with diseases\n")
-                        log_message(f"      - {pathways_count} metabolites with pathways\n")
-                            
-                        annotated_df = df_clean
-                            
-                        # Note: All_Pathways is already a string from reclassify_for_stats, no conversion needed
-                        log_message(f"✓ Applied disease relocation and pathway filtering to pre-annotated data\n")
-                        log_message(f"   Pathways column ready ({len(annotated_df)} metabolites)\n")
-                        
-                    except Exception as _e:
-                        log_message(f"⚠️ Could not post-process pre-annotated data: {_e}\n")
-                        annotated_df = df
-            else:
+            # Legacy pre-annotated-data fast path removed.
+            # Annotation always runs via the branch below.
+            if True:
                 # Check cancellation before running annotation
                 if getattr(self, 'pathway_annotation_cancelled', False):
                     self.root.after(0, lambda: self._handle_cancellation())
@@ -2978,28 +2699,35 @@ class PathwayAnnotationTab(BaseTab):
                 # so downstream annotators rely on the user's assignment rather than
                 # attempting to auto-detect or use fallbacks.
                 try:
+                    # Always ensure the verified Feature ID assignment is mapped to 'Name' for annotation
                     feature_col = None
                     if hasattr(self, 'verified_assignments') and self.verified_assignments:
                         feature_col = self.verified_assignments.get('Feature ID') or self.verified_assignments.get('LipidID') or self.verified_assignments.get('KEGG_ID')
 
                     if feature_col and feature_col in df.columns and feature_col != 'Name':
-                        # If 'Name' column already exists, drop it first to avoid duplicates
                         if 'Name' in df.columns:
                             df = df.drop(columns=['Name'])
                             log_message(f"🔄 Dropped existing 'Name' column (will use '{feature_col}' instead)\n")
                         df = df.rename(columns={feature_col: 'Name'})
-                        log_message(f"🔁 Renamed verified feature column '{feature_col}' to 'Name' for annotation\n")
-                    
+                        log_message(f"🔁 Remapped verified Feature ID column '{feature_col}' to 'Name' for annotation\n")
+                    elif 'Name' not in df.columns:
+                        # As a fallback, try to find a column with 'name' in its header
+                        name_like = [c for c in df.columns if 'name' in c.lower()]
+                        if name_like:
+                            df = df.rename(columns={name_like[0]: 'Name'})
+                            log_message(f"⚠️ No 'Name' column found, using '{name_like[0]}' as 'Name' for annotation.\n")
+                        else:
+                            # As a last resort, use the first column
+                            first_col = df.columns[0]
+                            df = df.rename(columns={first_col: 'Name'})
+                            log_message(f"⚠️ No 'Name' or name-like column found, using first column '{first_col}' as 'Name' for annotation.\n")
+
                     # CRITICAL: Check for and fix duplicate column names
                     if df.columns.duplicated().any():
                         dup_cols = df.columns[df.columns.duplicated()].tolist()
                         log_message(f"⚠️ Found duplicate columns: {dup_cols} - removing duplicates\n")
                         df = df.loc[:, ~df.columns.duplicated()]
-                    # DEBUG: ensure 'Name' exists before annotation
-                    if 'Name' not in df.columns:
-                        log_message("⚠️ WARNING: 'Name' column missing after renaming step – annotation may fail\n")
                 except Exception as e:
-                    # If any unexpected issue occurs, continue without renaming (mapper has fallbacks)
                     log_message(f"⚠️ Column rename issue: {e}\n")
                     pass
 
@@ -3035,8 +2763,7 @@ class PathwayAnnotationTab(BaseTab):
                     )
                     
                     log_message(f"🔄 Starting pathway mapping for all metabolites...\n")
-                    log_message(f"   • Annotating all {len(df)} metabolites\n")
-                    log_message(f"   • No p-value filtering (annotation only)\n\n")
+                    log_message(f"   • Annotating all {len(df)} metabolites\n\n")
                     
                     # Run the pathway mapping WITHOUT filtering (all metabolites annotated)
                     # P-value threshold NOT passed - annotation doesn't need it
@@ -3094,10 +2821,7 @@ class PathwayAnnotationTab(BaseTab):
                 except Exception as e:
                     log_message(f"\n❌ Pathway mapping FAILED: {str(e)}\n")
                     log_message(f"\n⛔ ANNOTATION ABORTED - Cannot continue without successful pathway mapping\n")
-                    log_message(f"\nPlease check:\n")
-                    log_message(f"   1. Your file has valid p-value and fold change columns\n")
-                    log_message(f"   2. Use 'Verify Columns' to confirm column assignments\n")
-                    log_message(f"   3. Check that numeric columns contain valid numbers\n")
+                    log_message(f"   Use 'Verify Columns' to confirm column assignments\n")
                     import traceback
                     log_message(f"\nTechnical details:\n{traceback.format_exc()}\n")
                     self.root.after(0, lambda: self.update_pathway_progress_with_percentage(100, "Failed - Pathway mapping error"))

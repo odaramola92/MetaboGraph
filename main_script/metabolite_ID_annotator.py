@@ -162,6 +162,7 @@ class MetaboliteIDAnnotator:
                  neg_df: Optional[pd.DataFrame] = None,
                  id_filter_mode: str = 'none',
                  selected_id_columns: Optional[List[str]] = None,
+                 skip_id_filtering: bool = False,
                  require_endogenous_yes: bool = False,
                  # New: configurable RT window (minutes) for Formula+ID dedup during ID annotation
                  dedup_rt_window_minutes: float = 2.0):
@@ -203,6 +204,7 @@ class MetaboliteIDAnnotator:
         # id_filter_mode: 'none' | 'any_selected'
         self.id_filter_mode = id_filter_mode if id_filter_mode in ('none', 'any_selected') else 'none'
         self.selected_id_columns = selected_id_columns or []
+        self.skip_id_filtering = bool(skip_id_filtering)
         self.require_endogenous_yes = bool(require_endogenous_yes)
         # RT window for Formula+ID summing during ID annotation stage
         try:
@@ -714,13 +716,17 @@ class MetaboliteIDAnnotator:
                     class_name = lipid_class_map.get(lipid_id_str)
                     
                     if class_name:
-                        # Check cache first
-                        cache_key = class_name
+                        # Normalize class_name: remove trailing 's' for KEGG search (singular form)
+                        # e.g., "Ceramides" -> "Ceramide", "Ceramide" -> "Ceramide"
+                        normalized_class_name = class_name.rstrip('s') if class_name.endswith('s') else class_name
+                        
+                        # Check cache first (use normalized name for cache key)
+                        cache_key = normalized_class_name
                         if cache_key in kegg_class_cache:
                             kegg_result = kegg_class_cache[cache_key]
                         else:
-                            logger.debug(f"[KEGG SEARCH] Searching for Class_name: '{class_name}' (LipidID: {lipid_id_str})")
-                            kegg_result = self.search_kegg_api(class_name)
+                            logger.debug(f"[KEGG SEARCH] Searching for Class_name: '{normalized_class_name}' (original: '{class_name}', LipidID: {lipid_id_str})")
+                            kegg_result = self.search_kegg_api(normalized_class_name)
                             kegg_class_cache[cache_key] = kegg_result
                         
                         if kegg_result and kegg_result.get('found') and kegg_result.get('KEGG_ID'):
@@ -728,9 +734,9 @@ class MetaboliteIDAnnotator:
                                 'KEGG_ID': kegg_result['KEGG_ID'],
                                 'match_type': 'Class'
                             }
-                            logger.info(f"[KEGG SEARCH] ✅ Found KEGG_ID {kegg_result['KEGG_ID']} for Class_name: '{class_name}' (LipidID: {lipid_id_str})")
+                            logger.info(f"[KEGG SEARCH] ✅ Found KEGG_ID {kegg_result['KEGG_ID']} for Class_name: '{normalized_class_name}' (original: '{class_name}', LipidID: {lipid_id_str})")
                         else:
-                            logger.debug(f"[KEGG SEARCH] ❌ No KEGG match for Class_name: '{class_name}'")
+                            logger.debug(f"[KEGG SEARCH] ❌ No KEGG match for Class_name: '{normalized_class_name}' (original: '{class_name}')")
                     else:
                         logger.debug(f"[KEGG SEARCH] ⚠️ No Class_name found for LipidID: {lipid_id_str}")
                     
@@ -1290,14 +1296,18 @@ class MetaboliteIDAnnotator:
             return False
         
         total_before_filter = len(final_df)
-        # Apply filter to keep only rows with at least one primary ID
-        mask_with_ids = final_df.apply(_has_primary_id, axis=1)
-        final_df = final_df[mask_with_ids].reset_index(drop=True)
-        
-        total_after_filter = len(final_df)
-        filtered_out = total_before_filter - total_after_filter
-        
-        logger.info(f"[LIPID MODE] Filtering: {total_before_filter} rows → {total_after_filter} rows with IDs (removed {filtered_out} without IDs)")
+        # Apply filter to keep only rows with at least one primary ID unless user disables filtering
+        if getattr(self, 'skip_id_filtering', False):
+            logger.info("[LIPID MODE] Skip ID filtering enabled - keeping all rows regardless of ID presence")
+        else:
+            mask_with_ids = final_df.apply(_has_primary_id, axis=1)
+            if mask_with_ids.sum() == 0:
+                logger.warning("[LIPID MODE] No IDs found after annotation - keeping all rows to avoid empty output")
+            else:
+                final_df = final_df[mask_with_ids].reset_index(drop=True)
+                total_after_filter = len(final_df)
+                filtered_out = total_before_filter - total_after_filter
+                logger.info(f"[LIPID MODE] Filtering: {total_before_filter} rows → {total_after_filter} rows with IDs (removed {filtered_out} without IDs)")
         
         # Report on all ID columns for summary
         id_cols = ['LipidMaps_ID', 'KEGG_ID', 'PubChem_CID', 'HMDB_ID', 'ChEBI_ID', 'CAS']
@@ -1530,6 +1540,65 @@ class MetaboliteIDAnnotator:
         if not s:
             return ''
         return str(s).replace(' ', '').upper()
+
+    def _strip_stereochemistry_prefix(self, name: str) -> Optional[str]:
+        """
+        Strip stereochemistry prefixes from metabolite names for fallback search.
+        
+        Handles:
+        - Symbol-based prefixes: "(-)-", "(+)-", "(±)-", "(R)-", "(S)-", "(E)-", "(Z)-"
+        - Short letter prefixes (≤2 chars): "L-", "D-", "DL-", "N-", "O-", "S-"
+        
+        Returns stripped name if a prefix was found, None otherwise.
+        The function is strict about letter prefixes (max 2 letters) to avoid
+        accidentally removing meaningful parts of compound names.
+        """
+        import re
+        
+        if not name or not isinstance(name, str):
+            return None
+        
+        original_name = name.strip()
+        
+        # Symbol-based stereochemistry prefixes (parenthesized)
+        # These can have more characters inside parentheses
+        symbol_prefixes = [
+            r'^\(\-\)\-',      # (-)-
+            r'^\(\+\)\-',      # (+)-
+            r'^\(±\)\-',       # (±)-
+            r'^\(R\)\-',       # (R)-
+            r'^\(S\)\-',       # (S)-
+            r'^\(E\)\-',       # (E)-
+            r'^\(Z\)\-',       # (Z)-
+            r'^\(R,R\)\-',     # (R,R)-
+            r'^\(S,S\)\-',     # (S,S)-
+            r'^\(R,S\)\-',     # (R,S)-
+            r'^\(S,R\)\-',     # (S,R)-
+        ]
+        
+        # Short letter prefixes (max 2 letters, case insensitive)
+        # Only strip if it's exactly 1-2 letters followed by a hyphen
+        letter_prefix_pattern = r'^([A-Za-z]{1,2})\-'
+        
+        # Try symbol prefixes first
+        for prefix_pattern in symbol_prefixes:
+            if re.match(prefix_pattern, original_name, re.IGNORECASE):
+                stripped = re.sub(prefix_pattern, '', original_name, count=1, flags=re.IGNORECASE)
+                if stripped and stripped != original_name:
+                    return stripped.strip()
+        
+        # Try short letter prefix (strict: max 2 letters)
+        match = re.match(letter_prefix_pattern, original_name)
+        if match:
+            prefix_letters = match.group(1)
+            # Only strip common stereochemistry/locant prefixes
+            common_prefixes = ['l', 'd', 'dl', 'ld', 'n', 'o', 's', 'r', 'p', 'm']
+            if prefix_letters.lower() in common_prefixes:
+                stripped = original_name[len(prefix_letters) + 1:]  # +1 for the hyphen
+                if stripped and stripped != original_name:
+                    return stripped.strip()
+        
+        return None
 
     def search_pubchem_api(self, name: str, expected_formula: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1933,6 +2002,9 @@ class MetaboliteIDAnnotator:
         """
         Search KEGG API for metabolite IDs
         Priority 2: Complement PubChem data
+        
+        Uses EXACT NAME MATCHING to ensure correct mapping.
+        For class names like "ceramide", KEGG returns C00195 with "ceramide" as primary name.
         """
         cache_key = f"kegg_api_{self._normalize_name(name)}"
         
@@ -1962,21 +2034,24 @@ class MetaboliteIDAnnotator:
                 best_match = None
                 normalized_search = self._normalize_name(name)
                 
+                # KEGG returns results ranked by relevance
+                # Check each result for exact match of the query name
                 for line in lines:
                     if '\t' in line:
                         compound_id, compound_names = line.split('\t', 1)
-                        # Split compound names by semicolon and check for exact match
-                        names_list = [self._normalize_name(n) for n in compound_names.split(';')]
+                        # Split compound names by semicolon and normalize each
+                        names_list = [self._normalize_name(n.strip()) for n in compound_names.split(';')]
                         
-                        # Check if our search name exactly matches any of the compound names
-                        if normalized_search and normalized_search in names_list:
+                        # Check if our search name exactly matches ANY of the compound names
+                        # This handles cases like "ceramide" matching "ceramide" from KEGG entry
+                        if normalized_search in names_list:
                             best_match = compound_id
-                            logger.info(f"[KEGG] Exact name match found: {compound_id}")
+                            logger.info(f"[KEGG] ✅ Exact match found: {compound_id} for '{name}'")
                             break
                 
-                # Do NOT take first result if no exact match - return empty instead
+                # If no exact match found, reject all results (don't use fallback)
                 if not best_match:
-                    logger.info(f"[MISS] KEGG no exact name match for: {name} (found {len(lines)} partial matches, rejected)")
+                    logger.debug(f"[KEGG] ❌ No exact name match for: {name} (found {len(lines)} results, but none matched exactly)")
                 
                 if best_match:
                     # Get detailed information for this compound
@@ -1999,13 +2074,13 @@ class MetaboliteIDAnnotator:
                             'found': True
                         })
                         
-                        logger.info(f"[OK] KEGG found {best_match} for: {name}")
+                        logger.info(f"[KEGG] ✅ Found {best_match} (formula: {formula}) for: {name}")
                     else:
-                        logger.info(f"[KEGG] Could not retrieve details for {best_match}")
+                        logger.warning(f"[KEGG] Could not retrieve details for {best_match}")
                 else:
-                    logger.info(f"[MISS] KEGG no results for: {name}")
+                    logger.debug(f"[KEGG] No exact match results for: {name}")
             else:
-                logger.info(f"[MISS] KEGG no results for: {name}")
+                logger.debug(f"[KEGG] Empty response or error for: {name}")
                 
         except Exception as e:
             logger.error(f"[ERROR] KEGG API exception for {name}: {e}")
@@ -2282,6 +2357,61 @@ class MetaboliteIDAnnotator:
                         logger.info(f"[MISS] HMDB no matches for: {name}")
                 else:
                     logger.info(f"[MISS] HMDB no matches for: {name}")
+            
+            # Strategy 4: Try stripping stereochemistry prefixes if no match found yet
+            # Only attempt if original search failed
+            if not result['found']:
+                stripped_name = self._strip_stereochemistry_prefix(name)
+                if stripped_name and stripped_name.lower() != name_normalized:
+                    logger.info(f"[RETRY] Trying stripped name: '{stripped_name}' (original: '{name}')")
+                    
+                    # Try name match with stripped name
+                    stripped_normalized = stripped_name.lower().strip()
+                    stripped_matches = self.hmdb_df[
+                        self.hmdb_df['Name'].astype(str).str.lower().str.strip() == stripped_normalized
+                    ]
+                    
+                    if not stripped_matches.empty:
+                        match = stripped_matches.iloc[0]
+                        result.update({
+                            'HMDB_ID': str(match.get('HMDB', '')),
+                            'InChIKey': str(match.get('InChIKey', '')),
+                            'Molecular_Formula': str(match.get('Molecular_Formula', '')),
+                            'Endogenous': str(match.get('Is_Endogenous', '')),
+                            'Super_Class': str(match.get('Super_Class', '')),
+                            'Class': str(match.get('Class', '')),
+                            'Sub_Class': str(match.get('Sub_Class', '')),
+                            'found': True
+                        })
+                        logger.info(f"[OK] HMDB matched by stripped name for: {name} -> {stripped_name}")
+                    
+                    # Try synonym match with stripped name if name match failed
+                    elif self.hmdb_synonyms_df is not None:
+                        stripped_syn_matches = self.hmdb_synonyms_df[
+                            self.hmdb_synonyms_df['Synonyms_lower'] == stripped_normalized
+                        ]
+                        
+                        if not stripped_syn_matches.empty:
+                            hmdb_id = stripped_syn_matches.iloc[0]['HMDB']
+                            main_match = self.hmdb_df[self.hmdb_df['HMDB'] == hmdb_id]
+                            
+                            if not main_match.empty:
+                                match = main_match.iloc[0]
+                                result.update({
+                                    'HMDB_ID': str(match.get('HMDB', '')),
+                                    'InChIKey': str(match.get('InChIKey', '')),
+                                    'Molecular_Formula': str(match.get('Molecular_Formula', '')),
+                                    'Endogenous': str(match.get('Is_Endogenous', '')),
+                                    'Super_Class': str(match.get('Super_Class', '')),
+                                    'Class': str(match.get('Class', '')),
+                                    'Sub_Class': str(match.get('Sub_Class', '')),
+                                    'found': True
+                                })
+                                logger.info(f"[OK] HMDB matched by stripped synonym for: {name} -> {stripped_name}")
+                        else:
+                            logger.info(f"[MISS] HMDB no matches for stripped name: {stripped_name}")
+                    else:
+                        logger.info(f"[MISS] HMDB no matches for stripped name: {stripped_name}")
 
         except Exception as e:
             logger.error(f"[ERROR] HMDB offline search exception for {name}: {e}")
@@ -2743,22 +2873,26 @@ class MetaboliteIDAnnotator:
             annotated_df = self.process_metabolites(input_df, max_workers)
 
             # Drop metabolites with no IDs at all (core ID columns all empty)
-            try:
-                id_core_cols = ['LipidMaps_ID','PubChem_CID','KEGG_ID','HMDB_ID','ChEBI_ID','CAS','SMILES','InChI','InChIKey']
-                existing_id_cols = [c for c in id_core_cols if c in annotated_df.columns]
-                if existing_id_cols:
-                    def _has_any_id(row):
-                        for c in existing_id_cols:
-                            val = row.get(c, None)
-                            if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() not in ('none','nan'):
-                                return True
-                        return False
-                    before_count = len(annotated_df)
-                    annotated_df = annotated_df[annotated_df.apply(_has_any_id, axis=1)].reset_index(drop=True)
-                    removed = before_count - len(annotated_df)
-                    logger.info(f"Filtered out {removed} metabolites with no IDs across {len(existing_id_cols)} ID columns")
-            except Exception as e:
-                logger.warning(f"Failed to filter empty-ID metabolites: {e}")
+            # SKIP this filter if skip_id_filtering is True (custom mode)
+            if not self.skip_id_filtering:
+                try:
+                    id_core_cols = ['LipidMaps_ID','PubChem_CID','KEGG_ID','HMDB_ID','ChEBI_ID','CAS','SMILES','InChI','InChIKey']
+                    existing_id_cols = [c for c in id_core_cols if c in annotated_df.columns]
+                    if existing_id_cols:
+                        def _has_any_id(row):
+                            for c in existing_id_cols:
+                                val = row.get(c, None)
+                                if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() not in ('none','nan'):
+                                    return True
+                            return False
+                        before_count = len(annotated_df)
+                        annotated_df = annotated_df[annotated_df.apply(_has_any_id, axis=1)].reset_index(drop=True)
+                        removed = before_count - len(annotated_df)
+                        logger.info(f"Filtered out {removed} metabolites with no IDs across {len(existing_id_cols)} ID columns")
+                except Exception as e:
+                    logger.warning(f"Failed to filter empty-ID metabolites: {e}")
+            else:
+                logger.info("Skip ID filtering enabled - keeping all metabolites regardless of ID status")
             
             # Clean up annotation_sources format for better readability
             if 'annotation_sources' in annotated_df.columns:
@@ -2800,23 +2934,25 @@ class MetaboliteIDAnnotator:
                     logger.info("="*60)
                     annotated_df = self._merge_with_cleaned_data(annotated_df, self.metabolite_ids_df)
                     # After merging, again drop rows with no IDs in case merge added empty rows
-                    try:
-                        id_core_cols2 = ['LipidMaps_ID','PubChem_CID','KEGG_ID','HMDB_ID','ChEBI_ID','CAS','SMILES','InChI','InChIKey']
-                        existing2 = [c for c in id_core_cols2 if c in annotated_df.columns]
-                        if existing2:
-                            def _has_any_id2(row):
-                                for c in existing2:
-                                    val = row.get(c, None)
-                                    if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() not in ('none','nan'):
-                                        return True
-                                return False
-                            before2 = len(annotated_df)
-                            annotated_df = annotated_df[annotated_df.apply(_has_any_id2, axis=1)].reset_index(drop=True)
-                            rem2 = before2 - len(annotated_df)
-                            if rem2:
-                                logger.info(f"Post-merge filtering removed {rem2} no-ID metabolites")
-                    except Exception as e:
-                        logger.warning(f"Post-merge empty-ID filter failed: {e}")
+                    # SKIP this filter if skip_id_filtering is True (custom mode)
+                    if not self.skip_id_filtering:
+                        try:
+                            id_core_cols2 = ['LipidMaps_ID','PubChem_CID','KEGG_ID','HMDB_ID','ChEBI_ID','CAS','SMILES','InChI','InChIKey']
+                            existing2 = [c for c in id_core_cols2 if c in annotated_df.columns]
+                            if existing2:
+                                def _has_any_id2(row):
+                                    for c in existing2:
+                                        val = row.get(c, None)
+                                        if pd.notna(val) and str(val).strip() != '' and str(val).strip().lower() not in ('none','nan'):
+                                            return True
+                                    return False
+                                before2 = len(annotated_df)
+                                annotated_df = annotated_df[annotated_df.apply(_has_any_id2, axis=1)].reset_index(drop=True)
+                                rem2 = before2 - len(annotated_df)
+                                if rem2:
+                                    logger.info(f"Post-merge filtering removed {rem2} no-ID metabolites")
+                        except Exception as e:
+                            logger.warning(f"Post-merge empty-ID filter failed: {e}")
                 else:
                     logger.info("No metabolite IDs data available - skipping merge step")
             except Exception as e:
@@ -3489,6 +3625,7 @@ def refilter_annotated_excel(
     input_file: str,
     output_file: str,
     selected_id_columns: Optional[List[str]] = None,
+    skip_id_filtering: bool = False,
     ms2_filter_mode: str = 'none',
     require_endogenous_yes: bool = False,
     progress_callback: Optional[callable] = None
@@ -3501,6 +3638,7 @@ def refilter_annotated_excel(
         output_file: Path to save the re-filtered results
         selected_id_columns: List of ID column names to use for filtering (e.g., ['HMDB_ID', 'KEGG_ID'])
                             If empty or None, no ID-based filtering is applied
+        skip_id_filtering: If True, skip all ID-based filtering (save all metabolites)
         ms2_filter_mode: MS2 filter mode ('none', 'preferred_only', 'preferred_or_other')
         require_endogenous_yes: If True, require Endogenous_Source == 'Yes'
         progress_callback: Optional callback function to report progress
@@ -3569,8 +3707,8 @@ def refilter_annotated_excel(
             original_count = len(df)
             log(f"  {sheet_name}: Starting with {original_count} rows")
             
-            # Apply ID column filter (skipped for lipid mode)
-            if (not lipid_mode_detected) and selected_id_columns and len(selected_id_columns) > 0:
+            # Apply ID column filter (skipped if skip_id_filtering is True, or for lipid mode)
+            if (not lipid_mode_detected) and (not skip_id_filtering) and selected_id_columns and len(selected_id_columns) > 0:
                 selected = [c for c in selected_id_columns if c in df.columns]
                 if selected:
                     mask_any = pd.Series([False] * len(df), index=df.index)
@@ -3579,6 +3717,8 @@ def refilter_annotated_excel(
                         mask_any = mask_any | colmask
                     df = df[mask_any].copy()
                     log(f"  {sheet_name}: After ID filter ({', '.join(selected)}): {len(df)} rows")
+            elif skip_id_filtering and not lipid_mode_detected:
+                log(f"  {sheet_name}: ID filtering skipped (all {original_count} rows retained)")
             
             # Apply MS2 filter (for Pos_id and Neg_id only) — skipped for lipid mode
             if (not lipid_mode_detected) and sheet_name in ['Pos_id', 'Neg_id'] and ms2_filter_mode != 'none':

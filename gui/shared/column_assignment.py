@@ -73,6 +73,18 @@ COLUMN_TYPES = {
         'examples': ['ChEBI_ID', 'ChEBI', 'chebi_id', 'CHEBI'],
         'category': 'Identifier',
     },
+    'PubChem CID': {
+        'description': 'PubChem compound identifier',
+        'required_by': [],
+        'examples': ['PubChem_CID', 'PubChem CID', 'pubchem_cid', 'pubchem'],
+        'category': 'Identifier',
+    },
+    'LipidMaps ID': {
+        'description': 'LipidMaps structural database identifier',
+        'required_by': [],
+        'examples': ['LipidMaps_ID', 'LipidMaps ID', 'lipidmaps_id', 'LMID'],
+        'category': 'Identifier',
+    },
     'InChIKey': {
         'description': 'InChIKey chemical structure identifier',
         'required_by': [],
@@ -169,6 +181,12 @@ COLUMN_TYPES = {
         'examples': ['Grade[DU143_3D_neg_1]', 'Grade[s1-1]'],
         'category': 'Sample Data',
     },
+    'Rej': {
+        'description': 'Rejection flag column (lipid data - True/False)',
+        'required_by': [],
+        'examples': ['Rej', 'Reject', 'Rejected'],
+        'category': 'Lipid Data',
+    },
     'LipidID': {
         'description': 'Lipid identifier (required for lipid data)',
         'required_by': ['lipid_cleaning'],
@@ -215,6 +233,31 @@ COLUMN_TYPES = {
         'description': 'Internal Standard (IS) feature - reference compound added at fixed concentration for IS normalization',
         'required_by': [],
         'examples': ['Internal_Standard', 'IS', 'ISTD', 'Standard', 'Ref_Standard'],
+        'category': 'Feature Data',
+    },
+    # Data Cleaning specific columns
+    'Annot. DeltaMass [ppm]': {
+        'description': 'Annotation delta mass in PPM (data cleaning)',
+        'required_by': [],
+        'examples': ['Annot. DeltaMass [ppm]', 'Delta Mass', 'DeltaMass'],
+        'category': 'Feature Data',
+    },
+    'Calc. MW': {
+        'description': 'Calculated molecular weight (data cleaning)',
+        'required_by': [],
+        'examples': ['Calc. MW', 'Calculated MW', 'MW', 'Molecular Weight'],
+        'category': 'Feature Data',
+    },
+    'm/z': {
+        'description': 'Mass to charge ratio',
+        'required_by': [],
+        'examples': ['m/z', 'mz', 'Mass/Charge', 'Precursor m/z'],
+        'category': 'Feature Data',
+    },
+    'MS2 Purity [%]': {
+        'description': 'MS2 purity percentage (data cleaning)',
+        'required_by': [],
+        'examples': ['MS2 Purity [%]', 'MS2Purity', 'Purity'],
         'category': 'Feature Data',
     },
 }
@@ -303,7 +346,8 @@ TAB_REQUIREMENTS = {
     'lipid_pathway_annotation': {
         'required': ['Feature ID'],
         'recommended': ['Class_name'],
-        'optional': ['Class', 'LipidMaps ID'],
+        'optional': ['Class', 'LipidMaps ID', 'HMDB ID', 'KEGG ID', 'PubChem CID', 'ChEBI ID',
+                    'CAS', 'SMILES', 'InChI', 'InChIKey', 'Formula'],
         'title': 'Lipid Pathway Annotation Column Assignment',
         'description': 'Verify columns for lipid pathway annotation. Required: Feature ID (LipidID). Recommended: Class_name (for KEGG pathway lookup). Lipid mode performs ID annotation first, then proceeds to lipid pathway annotation.',
         'detect_samples': False,
@@ -323,9 +367,9 @@ TAB_REQUIREMENTS = {
     },
     'lipid_cleaning': {
         'required': ['LipidID'],  # Use LipidID directly, no abstraction
-        'optional': ['Class', 'AdductIon', 'Area', 'Grade', 'ObsMz', 'ObsRt'],
+        'optional': ['Class', 'AdductIon', 'Area', 'Grade', 'Rej', 'ObsMz', 'ObsRt'],
         'title': 'Lipid Data Cleaning Column Assignment',
-        'description': 'Verify columns for lipid data cleaning. Required: LipidID. Optional: Area[...] columns (sample data), Grade[...] columns (quality scores), ObsMz, ObsRt, Class, AdductIon.',
+        'description': 'Verify columns for lipid data cleaning. Required: LipidID. Optional: Area[...] columns (sample data), Grade[...] columns (quality scores), Rej (rejection flag), ObsMz, ObsRt, Class, AdductIon.',
         'detect_samples': False,
         'multi_sheet': False,
         'detect_lipid_area': True,  # Enable Area[ ] column detection for lipids
@@ -370,10 +414,18 @@ class ColumnDetector:
     
     @staticmethod
     def normalize(text: str) -> str:
-        """Normalize text for pattern matching."""
+        """Normalize text for pattern matching.
+        
+        Removes underscores, dashes, spaces, dots, brackets, parentheses, and slashes
+        to allow flexible matching of column names like 'Annot. DeltaMass [ppm]' or 'm/z'.
+        """
         if not isinstance(text, str):
             text = str(text)
-        return text.lower().replace('_', '').replace('-', '').replace(' ', '')
+        # Remove common separators and special characters
+        text = text.lower()
+        for char in ['_', '-', ' ', '.', '[', ']', '(', ')', '/', '%']:
+            text = text.replace(char, '')
+        return text
     
     @staticmethod
     def is_numeric_convertible(series: pd.Series, min_ratio: float = 0.95) -> bool:
@@ -432,13 +484,19 @@ class ColumnDetector:
             'Area (Max.)': [r'areamax', r'area\(max', r'maxarea'],  # Area (Max.), AreaMax, Area(Max)
             'RT [min]': [r'rt\[min', r'rtmin', r'^rt$'],  # RT [min], RT[min], RTmin, RT
             'Polarity': [r'polarity', r'^pol$'],  # Polarity, Pol
-            'MS2': [r'ms2', r'msms'],  # MS2, MSMS
+            'MS2': [r'^ms2$', r'msms'],  # MS2, MSMS (exact match for ms2 to avoid matching other columns)
+            'MS2 Purity [%]': [r'ms2purity', r'purity'],  # MS2 Purity [%], MS2Purity, Purity
             'LipidID': [r'lipidid', r'^lipid$'],  # LipidID or Lipid
             'Area': [r'^area\['],  # Lipid area columns: Must start exactly with Area[ (no prefix like OrgArea or MeanArea)
             'Grade': [r'^grade\['],  # Lipid grade columns: Quality scores for filtering
+            'Rej': [r'^rej$', r'reject', r'rejected'],  # Rejection flag column
             'AdductIon': [r'adduct', r'^ion$'],  # AdductIon, Adduct, or Ion
             'ObsMz': [r'^calcmz', r'calcmz'],  # CalcMz column
             'ObsRt': [r'^basert', r'basert'],  # BaseRt column
+            # Data cleaning specific columns
+            'Annot. DeltaMass [ppm]': [r'annotdeltamass', r'deltamass.*ppm', r'deltappm', r'ppm'],  # Annot. DeltaMass [ppm]
+            'Calc. MW': [r'calcmw', r'calculatedmw', r'molecularweight', r'^mw$'],  # Calc. MW, Calculated MW, MW
+            'm/z': [r'^mz$', r'm/z', r'masstocharge', r'precursormz'],  # m/z, mz, mass to charge
             #'Delta(PPM)': [r'ppm', r'delta.*ppm', r'deltappm'],  # PPM, Delta(PPM), Delta_PPM
         }
         
@@ -623,19 +681,66 @@ class ColumnDetector:
         if not pattern or not pattern.strip():
             return []
         
+        # EXCLUDED columns - these are NEVER sample/Group Area columns
+        # These are metadata columns that should not be assigned as Group Area
+        EXCLUDED_COLUMN_PREFIXES = [
+            'calc', 'formula', 'name', 'annotation', 'annot', 'm/z', 'mz', 'mass',
+            'rt', 'retention', 'reference', 'polarity', 'ms2', 'ms1', 'adduct',
+            'pathway', 'metabolika', 'kegg', 'hmdb', 'pubchem', 'inchi', 'smiles',
+            'feature', 'compound', 'id', 'class', 'category', 'type', 'ion',
+            'delta', 'ppm', 'score', 'match', 'library', 'fragmentation', 'area (max',
+            'area(max', 'area max', 'checked', 'fill', 'molecular', 'neutral',
+            'charge', 'isotope', 'peak', 'intensity', 'height'
+        ]
+        
+        EXCLUDED_EXACT_COLUMNS = [
+            'name', 'formula', 'm/z', 'rt', 'rt [min]', 'rt[min]', 'polarity', 'ms2',
+            'reference ion', 'area (max.)', 'area(max)', 'area max', 'checked',
+            'fill %', 'molecular weight', 'mw', 'calc. mw', 'calc mw', 'calculated mw'
+        ]
+        
         # Support comma-separated patterns
         patterns = [p.strip().lower() for p in pattern.split(',') if p.strip()]
         matching_cols = []
         
         for col in df.columns:
-            col_lower = str(col).lower()
-            # Check if column starts with any pattern
+            col_lower = str(col).lower().strip()
+            
+            # Skip if column is in excluded exact matches
+            if col_lower in EXCLUDED_EXACT_COLUMNS:
+                continue
+            
+            # Skip if column starts with any excluded prefix
+            is_excluded = False
+            for excl in EXCLUDED_COLUMN_PREFIXES:
+                if col_lower.startswith(excl):
+                    is_excluded = True
+                    break
+            
+            if is_excluded:
+                continue
+            
+            # Check if column matches any of the user's patterns
             for p in patterns:
-                if col_lower.startswith(p):
-                    # Verify it's numeric (sample data)
-                    if ColumnDetector.is_numeric_convertible(df[col]):
-                        matching_cols.append(col)
-                        break  # Only add once even if multiple patterns match
+                # For very short patterns (1-2 chars), require exact word boundary match
+                # to avoid matching "C" to "Calc. MW"
+                if len(p) <= 2:
+                    # Check for pattern at start followed by non-letter (word boundary)
+                    # e.g., "C_sample" or "C1" or "C " matches, but "Calc" does not
+                    import re
+                    # Pattern should be at start and followed by non-letter or end of string
+                    if re.match(rf'^{re.escape(p)}(?:[^a-zA-Z]|$)', col_lower):
+                        # Verify it's numeric (sample data)
+                        if ColumnDetector.is_numeric_convertible(df[col]):
+                            matching_cols.append(col)
+                            break
+                else:
+                    # For longer patterns, use startswith
+                    if col_lower.startswith(p):
+                        # Verify it's numeric (sample data)
+                        if ColumnDetector.is_numeric_convertible(df[col]):
+                            matching_cols.append(col)
+                            break  # Only add once even if multiple patterns match
         
         return matching_cols
     
@@ -910,6 +1015,7 @@ class ColumnAssignmentDialog(tk.Toplevel):
         self.group_area_pattern = group_area_pattern
         self.detected_sample_cols_input = detected_sample_cols  # Store pre-detected columns
         self.allow_skip = allow_skip
+        self.existing_assignments = existing_assignments  # Store for pre-filling dialog
         self.group_area_auto_pattern = ""  # Will be set during auto-detection
         self.available_sheets = []
         self.selected_sheet = None
@@ -1317,6 +1423,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
                     # Rebuild the UI with new column names and assignments
                     self._rebuild_column_rows()
                     
+                    # Update area count validation
+                    self._update_area_count()
+                    
                     messagebox.showinfo(
                         "✅ Done",
                         f"Assigned {len(detected)} column(s) as Group Area"
@@ -1335,6 +1444,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
                     if var.get() == 'Group Area':
                         var.set('Ignore')
                         reset_count += 1
+                
+                # Update area count validation
+                self._update_area_count()
                 
                 messagebox.showinfo(
                     "✅ Reset",
@@ -1461,6 +1573,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
                 # Rebuild the UI to reflect the changes
                 self._rebuild_column_rows()
                 
+                # Update area count validation
+                self._update_area_count()
+                
                 messagebox.showinfo(
                     "✅ Done",
                     f"Assigned {len(detected_lipid)} column(s) as Area"
@@ -1474,6 +1589,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
                     if var.get() == 'Area':
                         var.set('Ignore')
                         reset_count += 1
+                
+                # Update area count validation
+                self._update_area_count()
                 
                 messagebox.showinfo(
                     "✅ Reset",
@@ -1633,6 +1751,115 @@ class ColumnAssignmentDialog(tk.Toplevel):
             # Trigger initial pattern check if auto-pattern is set
             if auto_grade_pattern:
                 self.after(100, apply_grade_pattern)
+        
+        # ========== SAMPLE/AREA COLUMN COUNT VALIDATION SECTION ==========
+        # For data_cleaning: validate Group Area columns
+        # For lipid_cleaning: validate Area columns
+        if self.tab_config.get('detect_group_area', False) or self.tab_config.get('detect_lipid_area', False):
+            validation_frame = ttk.LabelFrame(main_frame, text='🔒 Sample/Area Column Validation (REQUIRED)', padding=5)
+            validation_frame.pack(fill='x', pady=(0, 10))
+            
+            # Determine column type name based on tab type
+            if self.tab_config.get('detect_group_area', False):
+                col_type_name = "Group Area"
+                self._area_col_type = 'Group Area'
+            else:
+                col_type_name = "Area"
+                self._area_col_type = 'Area'
+            
+            # Calculate initial count of assigned columns from current assignments
+            # This ensures the count reflects auto-detected columns immediately
+            initial_count = 0
+            for col, var in self.assignments.items():
+                if var.get() == col_type_name:
+                    initial_count += 1
+            # Fallback to sample_cols if no assignments yet
+            if initial_count == 0 and self.sample_cols:
+                initial_count = len(self.sample_cols)
+            self._detected_area_count = initial_count
+            
+            # Validation row
+            validation_row = ttk.Frame(validation_frame)
+            validation_row.pack(fill='x', padx=3, pady=(2, 3))
+            
+            ttk.Label(
+                validation_row,
+                text=f'Expected {col_type_name} columns:',
+                font=('Arial', 8, 'bold')
+            ).pack(side='left', padx=(0, 5))
+            
+            # Entry for expected count
+            self._expected_area_count_var = tk.StringVar(value='')
+            expected_entry = ttk.Entry(
+                validation_row,
+                textvariable=self._expected_area_count_var,
+                width=8,
+                font=('Arial', 10)
+            )
+            expected_entry.pack(side='left', padx=(0, 10))
+            
+            # Dynamic detected count display (updates in real-time as user changes assignments)
+            self._area_count_display = ttk.Label(
+                validation_row,
+                text=f'Assigned: {self._detected_area_count}',
+                font=('Arial', 9, 'bold'),
+                foreground='#3498db'
+            )
+            self._area_count_display.pack(side='left')
+            
+            # Validation status label - starts as PENDING (user must enter count)
+            self._area_validation_status = ttk.Label(
+                validation_frame,
+                text='⏳ Enter expected count to validate',
+                font=('Arial', 8, 'bold'),
+                foreground='#e67e22'
+            )
+            self._area_validation_status.pack(anchor='w', padx=3, pady=(0, 2))
+            
+            # Validation function
+            def validate_area_count(*args):
+                """Check if entered count matches current assigned count - REQUIRED for confirmation"""
+                try:
+                    entered = self._expected_area_count_var.get().strip()
+                    if not entered:
+                        # REQUIRED: User must enter expected count
+                        self._area_validation_status.config(
+                            text='⏳ Enter expected count to validate',
+                            foreground='#e67e22'
+                        )
+                        self._area_count_valid = False  # REQUIRED - not valid if empty
+                        return
+                    
+                    entered_count = int(entered)
+                    current_assigned = self._detected_area_count
+                    
+                    if entered_count == current_assigned:
+                        self._area_validation_status.config(
+                            text=f'✅ Match! {entered_count} = {current_assigned}',
+                            foreground='#27ae60'
+                        )
+                        self._area_count_valid = True
+                    else:
+                        self._area_validation_status.config(
+                            text=f'❌ Mismatch! Expected {entered_count}, Assigned {current_assigned}',
+                            foreground='#e74c3c'
+                        )
+                        self._area_count_valid = False
+                except ValueError:
+                    self._area_validation_status.config(
+                        text='❌ Enter valid number',
+                        foreground='#e74c3c'
+                    )
+                    self._area_count_valid = False
+            
+            # Store validation function for use by assignment change handler
+            self._validate_area_count_func = validate_area_count
+            
+            # Initialize validation state - REQUIRED (not valid until user enters matching count)
+            self._area_count_valid = False
+            
+            # Bind validation to entry changes
+            self._expected_area_count_var.trace('w', validate_area_count)
         
         # Button frame at TOP RIGHT - compact
         btn_frame = tk.Frame(main_frame, bg='#f0f0f0')
@@ -1817,11 +2044,30 @@ class ColumnAssignmentDialog(tk.Toplevel):
         assigned_types = {}
         final_assignments = {}
         
-        # If we found an exact 'Name' column, pre-assign it as Feature ID
+        # PRIORITY 1: Use existing_assignments from previous session if available
+        if self.existing_assignments:
+            # Convert existing assignments (col_type: excel_col) to (excel_col: col_type)
+            for col_type, col_name in self.existing_assignments.items():
+                if col_name and col_name in self.df.columns:
+                    if isinstance(col_name, list):
+                        # Multiple columns assigned to same type
+                        for c in col_name:
+                            if c in self.df.columns:
+                                final_assignments[c] = col_type
+                    else:
+                        final_assignments[col_name] = col_type
+                        assigned_types[col_type] = col_name
+        
+        # If we found an exact 'Name' column, pre-assign it as Feature ID (unless already assigned)
         if exact_name_col and 'Feature ID' in (self.tab_config['required'] + self.tab_config.get('optional', [])):
-            assigned_types['Feature ID'] = exact_name_col
+            if 'Feature ID' not in assigned_types:
+                assigned_types['Feature ID'] = exact_name_col
         
         for excel_col in self.df.columns:
+            # Skip if already assigned from existing_assignments
+            if excel_col in final_assignments:
+                continue
+                
             # If rebuilding and this column already has an assignment, preserve it
             if preserve_existing and excel_col in self.assignments:
                 final_assignments[excel_col] = self.assignments[excel_col].get()
@@ -1885,10 +2131,42 @@ class ColumnAssignmentDialog(tk.Toplevel):
             )
             combo.pack(side='left', padx=5)
             
+            # Bind combobox change to update area count validation
+            def on_combo_change(event=None, col=excel_col, v=var):
+                """Update area count when assignment changes"""
+                self._update_area_count()
+            
+            combo.bind('<<ComboboxSelected>>', on_combo_change)
+            
             # Store reference for later
             if not hasattr(self, 'combo_widgets'):
                 self.combo_widgets = {}
             self.combo_widgets[excel_col] = combo
+    
+    def _update_area_count(self):
+        """Update the detected area/sample column count based on current assignments."""
+        if not hasattr(self, '_detected_area_count'):
+            return
+        
+        # Determine which column type to count
+        col_type = getattr(self, '_area_col_type', 'Area')
+        
+        # Count columns assigned to this type
+        count = 0
+        for excel_col, var in self.assignments.items():
+            if var.get() == col_type:
+                count += 1
+        
+        # Update the count
+        self._detected_area_count = count
+        
+        # Update display label if it exists
+        if hasattr(self, '_area_count_display'):
+            self._area_count_display.config(text=f'Assigned: {count}')
+        
+        # Re-validate if validation function exists
+        if hasattr(self, '_validate_area_count_func'):
+            self._validate_area_count_func()
     
     def _rebuild_column_rows(self):
         """Rebuild the column assignment rows after columns have been renamed."""
@@ -1943,6 +2221,86 @@ class ColumnAssignmentDialog(tk.Toplevel):
     
     def _on_confirm(self):
         """Confirm assignments and close."""
+        # VALIDATION: Check area/sample column count validation (for data cleaning tabs)
+        if hasattr(self, '_area_count_valid') and hasattr(self, '_detected_area_count'):
+            # Get the entered value for error message
+            entered = getattr(self, '_expected_area_count_var', tk.StringVar()).get().strip()
+            col_type_name = getattr(self, '_area_col_type', 'Area')
+            
+            # MANDATORY: User MUST enter expected count
+            if not entered:
+                messagebox.showerror(
+                    f"❌ {col_type_name} Column Count Required",
+                    f"You must enter the expected number of {col_type_name} columns.\n\n"
+                    f"Currently assigned: {self._detected_area_count} column(s)\n\n"
+                    f"Please enter the expected count in the validation field\n"
+                    f"to confirm your column assignments are correct."
+                )
+                return  # Don't close - user must fix
+            
+            # MANDATORY: Count must match
+            if not self._area_count_valid:
+                try:
+                    entered_count = int(entered)
+                    messagebox.showerror(
+                        f"❌ {col_type_name} Column Count Mismatch",
+                        f"Expected {col_type_name} columns ({entered_count}) does not match assigned ({self._detected_area_count}).\n\n"
+                        f"This usually means:\n"
+                        f"• Wrong columns are assigned as '{col_type_name}'\n"
+                        f"• Some columns need to be manually changed\n"
+                        f"• The pattern might need adjustment\n\n"
+                        f"Please adjust column assignments in the list below,\n"
+                        f"or use the pattern field to re-detect."
+                    )
+                except ValueError:
+                    messagebox.showerror(
+                        "❌ Invalid Input",
+                        f"Please enter a valid number for the expected column count."
+                    )
+                return  # Don't close - user must fix
+        
+        # VALIDATION: MANDATORY - Group Area columns must be assigned for data cleaning
+        if self.tab_config.get('detect_group_area', False):
+            # Count how many columns are ACTUALLY assigned as Group Area (by dropdown value, not column name)
+            # This respects user's manual changes to assignments
+            group_area_count = sum(1 for var in self.assignments.values() if var.get() == 'Group Area')
+            
+            if group_area_count == 0:
+                messagebox.showerror(
+                    "❌ No Group Area Columns Assigned",
+                    f"You must assign Group Area columns before proceeding.\n\n"
+                    f"Data cleaning requires Group Area columns to identify sample data.\n"
+                    f"Without them, the cleaning process will fail.\n\n"
+                    f"💡 HOW TO FIX:\n"
+                    f"1. Enter a pattern in the 'Group Area Pattern' field\n"
+                    f"   (e.g., 'Group Area', 'LF_pos', 'Peak')\n"
+                    f"2. Click the '✨ Assign Columns' button\n"
+                    f"3. Verify the count matches your expected number\n"
+                    f"4. Then click Confirm again"
+                )
+                return  # Don't close - user must fix
+        
+        # VALIDATION: MANDATORY - Area columns must be assigned for lipid cleaning
+        if self.tab_config.get('detect_lipid_area', False):
+            # Count how many columns are assigned as Area
+            # Count how many columns are ACTUALLY assigned as Area (by dropdown value, not column name)
+            area_count = sum(1 for var in self.assignments.values() if var.get() == 'Area')
+            
+            if area_count == 0:
+                messagebox.showerror(
+                    "❌ No Area Columns Assigned",
+                    f"You must assign Area columns before proceeding.\n\n"
+                    f"Lipid cleaning requires Area columns to identify sample data.\n"
+                    f"Without them, the cleaning process will fail.\n\n"
+                    f"💡 HOW TO FIX:\n"
+                    f"1. Enter a pattern in the 'Lipid Area Pattern' field\n"
+                    f"   (e.g., 'Area[')\n"
+                    f"2. Click the '✨ Assign Columns' button\n"
+                    f"3. Verify the count matches your expected number\n"
+                    f"4. Then click Confirm again"
+                )
+                return  # Don't close - user must fix
+        
         # If lipid area/grade patterns are provided and user didn't click Assign, apply them once here
         if self.tab_config.get('detect_lipid_area', False):
             # Area pattern
@@ -2072,8 +2430,15 @@ class ColumnAssignmentDialog(tk.Toplevel):
         for col_type, cols in pattern_columns.items():
             if cols:
                 # Store all matches - even single items as list for consistency with renaming logic
-                reversed_assignments[col_type] = cols if len(cols) > 1 else cols[0] if len(cols) == 1 else None
+                # Only add if there are actual columns (don't add None for empty lists)
+                if len(cols) > 1:
+                    reversed_assignments[col_type] = cols
+                elif len(cols) == 1:
+                    reversed_assignments[col_type] = cols[0]
+                # If cols is empty, don't add to reversed_assignments at all
 
+        # Safety filter: Remove any None or empty values that might have slipped through
+        reversed_assignments = {k: v for k, v in reversed_assignments.items() if v is not None and v != ''}
         
         # Validate required columns
         missing = []
@@ -2154,9 +2519,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
         elif self.tab_config.get('detect_samples', False):
             updated_sample_cols = ColumnDetector.detect_sample_columns(modified_df, exclude_cols=exclude_stats_cols)
         elif self.tab_config.get('detect_group_area', False):
-            # For metabolite cleaning with Group Area detection
-            updated_sample_cols = [col for col in modified_df.columns 
-                                  if isinstance(col, str) and 'Group Area:' in col]
+            # For metabolite cleaning with Group Area detection - use ACTUAL assignments, not column names
+            # This respects user's manual changes (e.g., unassigning a wrongly detected column)
+            updated_sample_cols = [col for col, var in self.assignments.items() if var.get() == 'Group Area']
         elif self.tab_config.get('detect_lipid_area', False):
             # For lipid cleaning: prefer user-assigned Area/Grade columns, fall back to pattern detection
             assigned_area_cols = [col for col, var in self.assignments.items() if var.get() == 'Area']
@@ -2180,6 +2545,9 @@ class ColumnAssignmentDialog(tk.Toplevel):
             'tab_type': self.tab_type,
             'sample_cols': updated_sample_cols,  # Use updated sample columns excluding verified stats
             'selected_sheet': getattr(self, 'sheet_var', None) and self.sheet_var.get(),  # Include selected sheet for ID annotation
+            'validation_passed': getattr(self, '_area_count_valid', True),  # Validation status for caller
+            'expected_count': getattr(self, '_expected_area_count_var', tk.StringVar()).get().strip() if hasattr(self, '_expected_area_count_var') else None,
+            'assigned_count': getattr(self, '_detected_area_count', len(updated_sample_cols)),  # How many were assigned
         }
         self.modified_df = modified_df
         

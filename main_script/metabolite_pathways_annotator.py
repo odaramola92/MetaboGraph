@@ -1853,12 +1853,19 @@ class MetabolitePathwayMapper:
             # Log that we're using pre-loaded data
             logger.info(f"Using pre-loaded DataFrame with {len(input_df)} metabolites")
             
-            # Check if data already has pathway information
-            pathway_cols = ['HMDB_Pathways', 'PathBank_Pathways', 'SMPDB_Pathways', 'WikiPathways', 'Metabolika_Pathways']
-            has_pathway_data = any(col in input_df.columns for col in pathway_cols)
+            # Check if data already has aggregated pathway information
+            # We only consider 'All_Pathways' or 'All_Pathways_Display' as true indicators
+            agg_cols = ['All_Pathways', 'All_Pathways_Display']
+            present_agg = [c for c in agg_cols if c in input_df.columns]
+            has_pathway_data = False
+            if present_agg:
+                try:
+                    has_pathway_data = any(input_df[c].notna().any() for c in present_agg)
+                except Exception:
+                    has_pathway_data = False
             
             if has_pathway_data:
-                logger.info("Data already contains pathway information - creating All_Pathways list column")
+                logger.info("Data already contains aggregated pathway information - creating All_Pathways list column")
                 mapped_df = self._create_all_pathways_column(input_df.copy())
             else:
                 # ANNOTATION MODE: Skip validation - just need Name column

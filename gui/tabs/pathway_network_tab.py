@@ -10,6 +10,7 @@ import numpy as np
 import subprocess
 import platform
 import re
+from typing import Optional
 
 # Import shared components
 from gui.shared.base_tab import BaseTab, _setup_global_styles
@@ -39,18 +40,18 @@ class PathwayNetworkTab(BaseTab):
         # Get root window for dialogs
         self.root = parent.winfo_toplevel()
         
-        # Initialize UI components
-        self.pathway_progress_text = None
-        self.pathway_stats_label = None
-        self.metabolite_stats_label = None
-        self.upstream_stats_label = None
-        self.diseases_stats_label = None
-        self.pathway_tree = None
-        self.metabolite_tree = None
-        self.upstream_tree = None
-        self.disease_tree = None
-        self.generate_network_button = None
-        self.open_folder_button = None
+        # Initialize UI components (set in setup_ui, marked as Any for Pylance)
+        self.pathway_progress_text: tk.scrolledtext.ScrolledText = None  # type: ignore
+        self.pathway_stats_label: tk.Label = None  # type: ignore
+        self.metabolite_stats_label: tk.Label = None  # type: ignore
+        self.upstream_stats_label: tk.Label = None  # type: ignore
+        self.diseases_stats_label: tk.Label = None  # type: ignore
+        self.pathway_tree: ttk.Treeview = None  # type: ignore
+        self.metabolite_tree: ttk.Treeview = None  # type: ignore
+        self.upstream_tree: ttk.Treeview = None  # type: ignore
+        self.disease_tree: ttk.Treeview = None  # type: ignore
+        self.generate_network_button: tk.Button = None  # type: ignore
+        self.open_folder_button: tk.Button = None  # type: ignore
         
         # Data storage
         self.pathway_original_metabolites_data = None
@@ -62,9 +63,11 @@ class PathwayNetworkTab(BaseTab):
         self.disease_selections = {}
         self._last_viewer_selection = {'pathways': set(), 'upstream': set(), 'diseases': set()}
         self.verified_network_dataframe_raw = None
+        self.verified_network_dataframe = None
         self.display_network_dataframe = None
         self.metabolite_class_lookup = {}
         self.class_compression_active = False
+        self.class_level_mapping_table = None
         # CRITICAL: Store original uploaded raw data (never modified, always source for enrichment)
         self.original_uploaded_raw_data = None
         
@@ -72,16 +75,25 @@ class PathwayNetworkTab(BaseTab):
         self.pathway_auto_connect = tk.BooleanVar(value=True)
         self.upstream_auto_connect = tk.BooleanVar(value=True)
         self.disease_auto_connect = tk.BooleanVar(value=True)
-
         # Track whether we're rendering metabolite or lipid results
-        self.current_data_mode = 'metabolite'
-        self.assigned_columns = {}
-        self.feature_col = 'Name'
-        self.pvalue_col = 'pvalue'
-        self.log2fc_col = 'log2FC'
+        self.current_data_mode: str = 'metabolite'
+        self.assigned_columns: dict = {}
+        self.feature_col: str = 'Name'
+        self.pvalue_col: str = 'pvalue'
+        self.log2fc_col: str = 'log2FC'
         
         # Remember last browsed directory
         self._last_browse_dir = None
+        
+        # Initialize UI state variables (will be set by setup_ui)
+        self.network_log2fc_threshold = tk.DoubleVar(value=0.0)
+        self.network_input_file = tk.StringVar(value='')
+        self.verified_network_rename_map = {}
+        self.pathway_rank_mode = tk.StringVar(value='Default')
+        self.upstream_rank_mode = tk.StringVar(value='Default')
+        self.disease_rank_mode = tk.StringVar(value='Default')
+        self.pathway_organism_var = tk.StringVar(value='Homo sapiens')
+        self.pathway_font_size_scale = tk.DoubleVar(value=1.0)
         
         # Create UI
         self.setup_ui()
@@ -878,9 +890,9 @@ class PathwayNetworkTab(BaseTab):
         fallback_pval = ['pvalue', 'p_value', 'P-Value', 'p-value', 'adj_p']
         fallback_log2 = ['log2FC', 'log2_fc', 'log2_fold_change', 'log2(Fold Change)', 'FC']
 
-        self.feature_col = self._resolve_assigned_column('Feature ID', df, fallback_name) or fallback_name[0]
-        self.pvalue_col = self._resolve_assigned_column('P-Value', df, fallback_pval) or fallback_pval[0]
-        self.log2fc_col = self._resolve_assigned_column('Log2 Fold Change', df, fallback_log2) or fallback_log2[0]
+        self.feature_col = self._resolve_assigned_column('Feature ID', df, fallback_name) or fallback_name[0]  # type: ignore
+        self.pvalue_col = self._resolve_assigned_column('P-Value', df, fallback_pval) or fallback_pval[0]  # type: ignore
+        self.log2fc_col = self._resolve_assigned_column('Log2 Fold Change', df, fallback_log2) or fallback_log2[0]  # type: ignore
 
         logger.info(f"[ASSIGNMENTS] Feature column: {self.feature_col}")
         logger.info(f"[ASSIGNMENTS] P-value column: {self.pvalue_col}")
@@ -1366,7 +1378,7 @@ class PathwayNetworkTab(BaseTab):
         else:
             logger.warning(f"   ⚠️ NO upstream regulators found in {comp_label.lower()} data!")
 
-    def _compute_metabolite_sources(self, df: pd.DataFrame = None):
+    def _compute_metabolite_sources(self, df: Optional[pd.DataFrame] = None):
         """Build a mapping from metabolite name to contributing sources (omics).
 
         Uses the 'Source' column created by the Multi-Omics tab.
@@ -1395,6 +1407,9 @@ class PathwayNetworkTab(BaseTab):
         metabolite_sources = {}
 
         import re as _re
+
+        if df is None:  # Should not reach here due to guards above, but add type guard
+            return metabolite_sources
 
         for _, row in df.iterrows():
             name = self._get_metabolite_value(row, 'name', None)
@@ -1528,7 +1543,7 @@ class PathwayNetworkTab(BaseTab):
             # fallback to max of provided counts
             na = res.get('n_metabolites') if isinstance(res.get('n_metabolites'), (int, float)) else 0
             nb = other.get('n_metabolites') if isinstance(other.get('n_metabolites'), (int, float)) else 0
-            res['n_metabolites'] = int(max(na, nb))
+            res['n_metabolites'] = int(max(na or 0, nb or 0))
 
         # CRITICAL: Also merge 'hits' (significant metabolites only)
         hits_a = set(_extract_mets(res, 'hits'))
@@ -1939,7 +1954,7 @@ class PathwayNetworkTab(BaseTab):
 
             # Order items according to Rank by selection
             try:
-                mode = getattr(self, 'pathway_rank_mode', None).get() if hasattr(self, 'pathway_rank_mode') else 'Default'
+                mode = self.pathway_rank_mode.get() if self.pathway_rank_mode else 'Default'
             except Exception:
                 mode = 'Default'
 
@@ -2252,12 +2267,12 @@ class PathwayNetworkTab(BaseTab):
                 log2fc = self._get_metabolite_value(row, 'log2fc', 0.0)
 
                 try:
-                    pvalue = float(pvalue)
+                    pvalue = float(pvalue)  # type: ignore
                 except (TypeError, ValueError):
                     pvalue = 1.0
 
                 try:
-                    log2fc = float(log2fc)
+                    log2fc = float(log2fc)  # type: ignore
                 except (TypeError, ValueError):
                     log2fc = 0.0
                 
@@ -2551,8 +2566,8 @@ class PathwayNetworkTab(BaseTab):
                 # Multi-omics score for this upstream regulator based on contributing metabolites
                 mo_score, n_sources, total_hits = self._compute_multiomics_score(mets, metabolite_sources)
                 ml = float(ml_series.get(name, 0.0)) if not ml_series.empty else 0.0
-                pr = float(cent_df.loc[name, 'pagerank']) if name in getattr(cent_df, 'index', []) else 0.0
-                btw = float(cent_df.loc[name, 'betweenness']) if name in getattr(cent_df, 'index', []) else 0.0
+                pr = float(cent_df.loc[name, 'pagerank']) if name in getattr(cent_df, 'index', []) else 0.0  # type: ignore
+                btw = float(cent_df.loc[name, 'betweenness']) if name in getattr(cent_df, 'index', []) else 0.0  # type: ignore
                 items.append({
                     'name': name,
                     'type': info['type'],
@@ -2586,7 +2601,7 @@ class PathwayNetworkTab(BaseTab):
 
             # Determine sorting mode
             try:
-                mode = getattr(self, 'upstream_rank_mode', None).get() if hasattr(self, 'upstream_rank_mode') else 'Default'
+                mode = self.upstream_rank_mode.get() if self.upstream_rank_mode else 'Default'
             except Exception:
                 mode = 'Default'
 
@@ -2807,8 +2822,8 @@ class PathwayNetworkTab(BaseTab):
                 n_metabolites = len(set(metabolites))
                 mo_score, n_sources, total_hits = self._compute_multiomics_score(metabolites, metabolite_sources)
                 ml = float(ml_series.get(disease_name, 0.0)) if not ml_series.empty else 0.0
-                pr = float(cent_df.loc[disease_name, 'pagerank']) if disease_name in getattr(cent_df, 'index', []) else 0.0
-                btw = float(cent_df.loc[disease_name, 'betweenness']) if disease_name in getattr(cent_df, 'index', []) else 0.0
+                pr = float(cent_df.loc[disease_name, 'pagerank']) if disease_name in getattr(cent_df, 'index', []) else 0.0  # type: ignore
+                btw = float(cent_df.loc[disease_name, 'betweenness']) if disease_name in getattr(cent_df, 'index', []) else 0.0  # type: ignore
                 items.append({
                     'name': disease_name,
                     'n': n_metabolites,
@@ -2841,7 +2856,7 @@ class PathwayNetworkTab(BaseTab):
 
             # Ranking mode selection
             try:
-                mode = getattr(self, 'disease_rank_mode', None).get() if hasattr(self, 'disease_rank_mode') else 'Default'
+                mode = self.disease_rank_mode.get() if self.disease_rank_mode else 'Default'
             except Exception:
                 mode = 'Default'
 
@@ -3249,6 +3264,17 @@ class PathwayNetworkTab(BaseTab):
                                    state='readonly', font=('Arial', 8), width=12)
         weight_combo.pack(side='left', padx=(5, 0))
         
+        # Font Size Scale for Statistics Plots
+        row8 = tk.Frame(settings_frame, bg='#d5f4e6')
+        row8.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(row8, text="Stats Plot Font Size:", font=('Arial', 8), bg='#d5f4e6').pack(side='left')
+        if not hasattr(self, 'pathway_font_size_scale'):
+            self.pathway_font_size_scale = tk.DoubleVar(value=1.0)
+        tk.Spinbox(row8, from_=0.5, to=3.0, increment=0.1, textvariable=self.pathway_font_size_scale,
+                  font=('Arial', 8), width=8).pack(side='left', padx=(5, 0))
+        tk.Label(row8, text="(0.5x - 3.0x)", font=('Arial', 7), bg='#d5f4e6', fg='#555').pack(side='left', padx=(3, 0))
+        
         # Reset button
         def reset_analysis_defaults():
             self.pathway_analysis_method.set("Fisher ORA")
@@ -3261,6 +3287,7 @@ class PathwayNetworkTab(BaseTab):
             self.pathway_limit_pathways.set(True)
             self.pathway_max_total.set(25)
             self.iwpa_weight_mode.set("signed_p")
+            self.pathway_font_size_scale.set(1.0)
         
         tk.Button(settings_frame, text="↺ Reset to Defaults", command=reset_analysis_defaults,
                  bg='#95a5a6', fg='white', font=('Arial', 7, 'bold'), padx=4, pady=2).pack(pady=(5, 0))
@@ -3360,6 +3387,7 @@ class PathwayNetworkTab(BaseTab):
             'pathway_sig_h': tk.BooleanVar(value=True),
             'pathway_enrichment': tk.BooleanVar(value=True),
             'pathway_enrichment_selected': tk.BooleanVar(value=True),
+            'chord_diagram': tk.BooleanVar(value=True),
         }
         
         # ═══════════════════════════════════════════════════════════════════
@@ -5807,7 +5835,7 @@ For questions or issues, refer to the main documentation.
                         continue
                     try:
                         # Attempt to convert to numeric, handling scientific notation
-                        df[col] = pd.to_numeric(df[col], errors='ignore')
+                        df[col] = pd.to_numeric(df[col], errors='coerce')  # Changed from 'ignore' for type safety
                     except Exception:
                         pass
                 return df
@@ -6406,7 +6434,7 @@ For questions or issues, refer to the main documentation.
 
                 # Always generate a PNG legend for the network (no HTML fallback)
                 try:
-                    from main_script.metabolite_pathway_network import create_network_legend_figure
+                    from main_script.metabolite_pathway_network import create_network_legend_figure  # type: ignore
                     leg_fig = create_network_legend_figure(include_upstream=include_upstream, include_diseases=include_diseases)
                     leg_fig.write_image(legend_png_path, format='png', width=520, height=360)
                     self._log_network(f"Saved Legend PNG: {legend_png_path}\n")
@@ -6435,7 +6463,8 @@ For questions or issues, refer to the main documentation.
 
                     # Generate plots with SELECTED pathways (for states, significance, selected enrichment)
                     logger.info(f"[PLOT DEBUG] Generating plots with {len(selected_pathways)} SELECTED pathways")
-                    figs_selected = create_pathway_summary_plots(metabolites, selected_pathways)
+                    figs_selected = create_pathway_summary_plots(metabolites, selected_pathways, font_size_scale=self.pathway_font_size_scale.get())
+                    # figs_selected now includes chord legend as 8th element
                     
                     # Extract plots that should use SELECTED pathways
                     fig1 = figs_selected[0] if len(figs_selected) > 0 else None  # Pathway States
@@ -6443,6 +6472,8 @@ For questions or issues, refer to the main documentation.
                     fig3 = figs_selected[2] if len(figs_selected) > 2 else None  # Pathway Significance (Horizontal)
                     fig4 = figs_selected[3] if len(figs_selected) > 3 else None  # Bubble plot (may be disabled)
                     fig6 = figs_selected[5] if len(figs_selected) > 5 else None  # Pathway Enrichment (Selected)
+                    fig7 = figs_selected[6] if len(figs_selected) > 6 else None  # Chord Diagram (Selected)
+                    fig_legend = figs_selected[7] if len(figs_selected) > 7 else None  # Chord Legend
                     
                     # Generate Top 20 enrichment plot with ALL pathways
                     all_pathways_for_top20 = self.pathway_original_pathways_data or selected_pathways
@@ -6451,7 +6482,8 @@ For questions or issues, refer to the main documentation.
                     fig5 = None  # Pathway Enrichment (Top 20)
                     if len(all_pathways_for_top20) > len(selected_pathways):
                         # Generate plots with ALL pathways only to extract Top 20 enrichment
-                        figs_all = create_pathway_summary_plots(metabolites, all_pathways_for_top20)
+                        figs_all = create_pathway_summary_plots(metabolites, all_pathways_for_top20, font_size_scale=self.pathway_font_size_scale.get())
+                        # figs_all now includes chord legend as 8th element
                         fig5 = figs_all[4] if len(figs_all) > 4 else None
                         logger.info(f"[PLOT DEBUG] Top 20 enrichment uses {len(all_pathways_for_top20)} pathways")
                     else:
@@ -6599,7 +6631,7 @@ For questions or issues, refer to the main documentation.
                         fig2 = _postprocess_vertical_significance(fig2)
                     if fig3 is not None and self.network_plot_selections['pathway_sig_h'].get():
                         fig3 = _postprocess_horizontal_significance(fig3)
-                    # fig5 and fig6 (Pathway Enrichment) don't need postprocessing
+                    # fig5, fig6, and fig7 (Pathway Enrichment and Chord Diagram) don't need postprocessing
 
                     # Choose which plots to save
                     sel = self.network_plot_selections
@@ -6614,21 +6646,38 @@ For questions or issues, refer to the main documentation.
                         plots.append((fig5, 'pathway_enrichment_top20.png', 'Pathway Enrichment (Top 20)'))
                     if sel['pathway_enrichment_selected'].get() and fig6 is not None:
                         plots.append((fig6, 'pathway_enrichment_selected.png', 'Pathway Enrichment (Selected Pathways)'))
+                    if sel['chord_diagram'].get() and fig7 is not None:
+                        plots.append((fig7, 'pathway_chord_diagram.png', 'Pathway-Metabolite Chord Diagram'))
+                    if sel['chord_diagram'].get() and fig_legend is not None:
+                        plots.append((fig_legend, 'pathway_chord_legend.png', 'Chord Diagram Legend'))
 
                     saved = 0
                     for pfig, fname, desc in plots:
                         try:
                             outp = os.path.join(pathways_networks_dir, fname)
-                            pfig.write_image(outp, format='png')
-                            self._log_network(f"Saved {desc}: {outp}\n")
-                            saved += 1
-                        except Exception:
+                            
+                            # Check if it's a matplotlib figure (fig7 chord diagram)
+                            if hasattr(pfig, 'savefig'):
+                                # Matplotlib figure
+                                pfig.savefig(outp, format='png', dpi=300, bbox_inches='tight')
+                                self._log_network(f"Saved {desc}: {outp}\n")
+                                saved += 1
+                            else:
+                                # Plotly figure
+                                pfig.write_image(outp, format='png')
+                                self._log_network(f"Saved {desc}: {outp}\n")
+                                saved += 1
+                        except Exception as e1:
                             # Fallback to HTML if image export not available
                             try:
                                 outp = os.path.join(pathways_networks_dir, fname.replace('.png', '.html'))
-                                pfig.write_html(outp)
-                                self._log_network(f"Saved {desc} as HTML: {outp}\n")
-                                saved += 1
+                                if hasattr(pfig, 'write_html'):
+                                    # Plotly figure
+                                    pfig.write_html(outp)
+                                    self._log_network(f"Saved {desc} as HTML: {outp}\n")
+                                    saved += 1
+                                else:
+                                    self._log_network(f"Cannot save {desc} (unsupported format)\n")
                             except Exception as e2:
                                 self._log_network(f"Failed to save {desc}: {e2}\n")
                 except Exception as e:
@@ -6979,9 +7028,9 @@ For questions or issues, refer to the main documentation.
             
             viewer = PathwayNetworkViewer(
                 pathway_data=df_pathways,
-                metabolite_data=viewer_metabolite_data,
-                upstream_data=upstream_data,
-                disease_data=disease_data,
+                metabolite_data=viewer_metabolite_data if viewer_metabolite_data is not None else pd.DataFrame(),
+                upstream_data=upstream_data if upstream_data is not None else pd.DataFrame(),
+                disease_data=disease_data if disease_data is not None else pd.DataFrame(),
                 pathway_stats=pathway_data,  # Pass full stats dict (not DataFrame) for z-scores
                 title="Interactive Pathway Network",
                 mode='full_network',  # Start in full network mode (default)
@@ -7916,5 +7965,5 @@ For questions or issues, refer to the main documentation.
                 except Exception:
                     pass
                 if btn:
-                    self.frame.after(0, lambda: btn.config(state='normal', text='🚀 Generate Network'))
+                    self.frame.after(0, lambda: btn.config(state='normal', text='🚀 Generate Network') if btn else None)  # type: ignore
         threading.Thread(target=_worker, daemon=True).start()

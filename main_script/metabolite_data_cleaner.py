@@ -7,6 +7,7 @@ Extracts and cleans metabolite data with Metabolika Pathways and BioCyc Pathways
 import pandas as pd
 import numpy as np
 import os
+import sys
 import logging
 import re
 from pathlib import Path
@@ -67,8 +68,6 @@ class CleanColumnDataCleaner:
             'M+2H', 
             'M+NH4',
             'M+H-H2O',
-            'M+HCOO',
-            'M+CH3COO',
             'M+Na',
             'M+K',
             'M+Li'
@@ -76,7 +75,9 @@ class CleanColumnDataCleaner:
         self.lipid_negative_adducts = [
             'M-H',
             'M-2H',
-            'M-CH3'
+            'M-CH3',
+            'M+HCOO',
+            'M+CH3COO'
         ]
 
     def get_selected_ion_order(self, selected_ions: List[str], polarity: str = 'positive') -> List[str]:
@@ -2082,15 +2083,32 @@ class CleanColumnDataCleaner:
             DataFrame with Short_Annotation and Class columns, or None if file not found
         """
         try:
-            # Try to find the annotation file - check main_script folder first (where this file is located)
+            # Try to find the annotation file - check multiple locations for both development and PyInstaller
             base_dir = os.path.dirname(os.path.abspath(__file__))
             
-            # Check multiple locations: main_script folder first, then Databases, then project root
-            possible_paths = [
+            possible_paths = []
+            
+            # Check if running as PyInstaller executable
+            if getattr(sys, 'frozen', False):
+                # Running as PyInstaller executable - check bundled resources first
+                if hasattr(sys, '_MEIPASS'):
+                    # PyInstaller bundled resources location
+                    possible_paths.append(os.path.join(sys._MEIPASS, 'Databases', 'lipid_class_annotation.txt'))
+                
+                # Also check next to executable
+                exe_dir = os.path.dirname(sys.executable)
+                possible_paths.extend([
+                    os.path.join(exe_dir, 'Databases', 'lipid_class_annotation.txt'),  # Databases next to exe
+                    os.path.join(exe_dir, 'lipid_class_annotation.txt'),  # Same dir as exe
+                ])
+            
+            # Standard development/runtime paths (works for both Python script and PyInstaller fallback)
+            possible_paths.extend([
+                os.path.join(base_dir, '..', 'Databases', 'lipid_class_annotation.txt'),  # ../Databases/ folder (MAIN LOCATION)
                 os.path.join(base_dir, 'lipid_class_annotation.txt'),  # main_script/ folder (same as this file)
                 os.path.join(base_dir, '..', 'lipid_class_annotation.txt'),  # Project root
-                os.path.join(base_dir, 'Databases', 'lipid_class_annotation.txt'),  # Databases subfolder
-            ]
+                os.path.join(base_dir, 'Databases', 'lipid_class_annotation.txt'),  # main_script/Databases subfolder
+            ])
             
             annotation_file = None
             for path in possible_paths:
@@ -2247,6 +2265,10 @@ class CleanColumnDataCleaner:
         other_feature_columns = {}
         
         for expected_col, actual_col_or_list in assignments.items():
+            # Skip if assignment is None or empty
+            if actual_col_or_list is None:
+                continue
+                
             actual_cols = actual_col_or_list if isinstance(actual_col_or_list, list) else [actual_col_or_list] if actual_col_or_list else []
             
             for actual_col in actual_cols:
@@ -2272,11 +2294,11 @@ class CleanColumnDataCleaner:
         
         # Enhanced debug output showing ALL essential columns
         self._log(f"\n   📋 VERIFIED COLUMN ASSIGNMENTS:\n")
-        self._log(f"   ✅ LipidID: {lipid_id_column}\n")
-        self._log(f"   ✅ Class: {class_column}\n")
-        self._log(f"   ✅ AdductIon: {adduct_ion_column}\n")
-        self._log(f"   ✅ Mz column: {mz_column}\n")
-        self._log(f"   ✅ Rt column: {rt_column}\n")
+        self._log(f"   {'✅' if lipid_id_column else '⚠️ '} LipidID: {lipid_id_column if lipid_id_column else '(not assigned)'}\n")
+        self._log(f"   {'✅' if class_column else '⚠️ '} Class: {class_column if class_column else '(not assigned)'}\n")
+        self._log(f"   {'✅' if adduct_ion_column else '⚠️ '} AdductIon: {adduct_ion_column if adduct_ion_column else '(not assigned - adduct filtering will be skipped)'}\n")
+        self._log(f"   {'✅' if mz_column else '⚠️ '} Mz column: {mz_column if mz_column else '(not assigned)'}\n")
+        self._log(f"   {'✅' if rt_column else '⚠️ '} Rt column: {rt_column if rt_column else '(not assigned)'}\n")
         self._log(f"   ✅ Area columns: {len(area_columns)}\n")
         if other_feature_columns:
             self._log(f"   ✅ Other features: {', '.join(other_feature_columns.keys())}\n")
@@ -2313,6 +2335,10 @@ class CleanColumnDataCleaner:
         # Standardize column names for downstream processing
         rename_map = {}
         for expected_col, actual_col_or_list in assignments.items():
+            # Skip if assignment is None or empty
+            if actual_col_or_list is None:
+                continue
+                
             actual_cols = actual_col_or_list if isinstance(actual_col_or_list, list) else [actual_col_or_list] if actual_col_or_list else []
 
             # For Grade: normalize to Grade[<token>] so grade filtering picks them up even if not already in bracket form
@@ -2345,6 +2371,8 @@ class CleanColumnDataCleaner:
         adduct_filter = config.get('adduct_filter')
         if adduct_filter and 'AdductIon' in df_clean.columns:
             df_clean = self._filter_lipid_adducts(df_clean, adduct_filter)
+        elif adduct_filter:
+            self._log(f"   ⚠️  Adduct filtering requested but AdductIon column not available - skipping adduct filtering\n")
 
         # Clean LipidID and add Polarity column (skip if polarity is already known from separate mode)
         if polarity in ['positive', 'negative']:
@@ -2364,9 +2392,10 @@ class CleanColumnDataCleaner:
         df_clean = self._clean_duplicate_lipids_verified(df_clean, mode=polarity)
 
         # EARLY: Apply grade-based filtering BEFORE sample name mapping to avoid duplicate collisions
-        grade_threshold = config.get('grade_threshold', '<= C')
+        grade_threshold = config.get('grade_threshold', '')
+        filter_rej = config.get('filter_rej', False)
         try:
-            df_clean = self._apply_grade_filtering(df_clean, grade_threshold, polarity)
+            df_clean = self._apply_grade_filtering(df_clean, grade_threshold, polarity, filter_rej)
         except Exception as _:
             # Continue even if grade filtering fails; better to proceed than abort
             pass
@@ -2600,9 +2629,9 @@ class CleanColumnDataCleaner:
                     2. Otherwise parse adduct substring after base ID and look for known tokens.
         
                 Known positive adduct tokens (any present => positive):
-                    +H, +2H, +NH4, +H-H2O, +Na, +K, +Li, +HCOO, +CH3COO
+                    +H, +2H, +NH4, +H-H2O, +Na, +K, +Li
                 Known negative adduct tokens (only used if no positive tokens detected):
-                    -H, -2H, -H-H2O, -CH3
+                    -H, -2H, -H-H2O, -CH3, +HCOO, +CH3COO
         
                 Notes:
                     - Complex multi-part adducts like '+H-H2O' must remain classified as positive.
@@ -2616,8 +2645,8 @@ class CleanColumnDataCleaner:
             return df
         
         # Define known tokens for tokenized adduct parsing (fallback when AdductIon absent)
-        positive_tokens = {"+H", "+2H", "+NH4", "+H-H2O", "+Na", "+K", "+Li", "+HCOO", "+CH3COO"}
-        negative_tokens = {"-H", "-2H", "-H-H2O", "-CH3"}
+        positive_tokens = {"+H", "+2H", "+NH4", "+H-H2O", "+Na", "+K", "+Li"}
+        negative_tokens = {"-H", "-2H", "-H-H2O", "-CH3", "+HCOO", "+CH3COO"}
 
         def row_clean(row):
             lipid_id = row.get('LipidID')
@@ -3170,19 +3199,48 @@ class CleanColumnDataCleaner:
 
         return build(pos_df), build(neg_df)
 
-    def _apply_grade_filtering(self, df: pd.DataFrame, grade_threshold: str, polarity: str) -> pd.DataFrame:
+    def _apply_grade_filtering(self, df: pd.DataFrame, grade_threshold: str, polarity: str, filter_rej: bool = False) -> pd.DataFrame:
         """
         Apply grade-based filtering: set Area values to 0 for poor quality grades.
+        Optionally filter by Rej column to remove rejected rows.
         
         Args:
             df: DataFrame with Area and Grade columns
-            grade_threshold: Threshold string (e.g., '<= C')
+            grade_threshold: Threshold string (e.g., 'A,B,C'). Empty string skips grade filtering.
             polarity: 'positive' or 'negative' for logging
+            filter_rej: If True, keep only rows where Rej column is False
             
         Returns:
-            DataFrame with Area values filtered by grade
+            DataFrame with Area values filtered by grade and/or Rej column
         """
         try:
+            # Check if we should skip both filters
+            skip_grade = not grade_threshold or grade_threshold.strip() == ''
+            
+            if skip_grade and not filter_rej:
+                self._log(f"   No grade threshold specified and Rej filtering disabled - skipping quality filtering\n")
+                return df
+            
+            # Apply Rej column filtering first (removes entire rows)
+            if filter_rej:
+                if 'Rej' in df.columns:
+                    initial_rows = len(df)
+                    # Keep only rows where Rej is False (remove True)
+                    # Handle various representations: 'False', False, 'false', 0, etc.
+                    df = df[df['Rej'].astype(str).str.upper() != 'TRUE']
+                    removed_rows = initial_rows - len(df)
+                    self._log(f"\n🔍 Rej Column Filtering ({polarity})...\n")
+                    self._log(f"   Initial rows: {initial_rows:,}\n")
+                    self._log(f"   Removed rows (Rej=True): {removed_rows:,}\n")
+                    self._log(f"   Remaining rows: {len(df):,}\n\n")
+                else:
+                    self._log(f"   ⚠️ Rej column filtering enabled but 'Rej' column not found - skipping Rej filtering\n")
+            
+            # Skip grade filtering if no threshold specified
+            if skip_grade:
+                self._log(f"   No grade threshold specified - skipping grade filtering\n")
+                return df
+            
             # Find all Grade columns (pattern: Grade[sample_name])
             grade_cols = [col for col in df.columns if isinstance(col, str) and col.startswith('Grade[') and col.endswith(']')]
             
@@ -3587,6 +3645,96 @@ class CleanColumnDataCleaner:
             combined_df = apply_mapping_and_cleaning_to_df(combined_df)
             
             self._log(f"   ✅ All column transformations complete\n")
+
+        # Post-mapping cleanup for lipid exports:
+        # - If both positive and negative sample columns are present, keep only
+        #   the correct polarity for each sheet based on '_pos'/'_neg' suffix.
+        # - Strip '_pos'/'_neg' suffixes for cleaner final column names.
+        # - If duplicate sample column names remain (e.g., because of mapping
+        #   collisions), collapse numeric duplicates by summing.
+        def _drop_columns_with_suffix(df: Optional[pd.DataFrame], suffix_to_drop: str, label: str) -> Optional[pd.DataFrame]:
+            if df is None or df.empty:
+                return df
+            suffix = suffix_to_drop.lower()
+            cols_to_drop = [
+                c for c in df.columns
+                if isinstance(c, str) and c.lower().endswith(suffix)
+            ]
+            if cols_to_drop:
+                self._log(f"   🧽 Dropping {len(cols_to_drop)} columns ending with '{suffix_to_drop}' ({label})\n")
+                return df.drop(columns=cols_to_drop)
+            return df
+
+        def _strip_suffix(df: Optional[pd.DataFrame], suffix_to_strip: str) -> Optional[pd.DataFrame]:
+            if df is None or df.empty:
+                return df
+            suffix = suffix_to_strip
+            new_cols = []
+            for c in df.columns:
+                if isinstance(c, str) and c.endswith(suffix):
+                    new_cols.append(c[: -len(suffix)])
+                else:
+                    new_cols.append(c)
+            df = df.copy()
+            df.columns = new_cols
+            return df
+
+        def _collapse_duplicate_columns(df: Optional[pd.DataFrame], label: str) -> Optional[pd.DataFrame]:
+            if df is None or df.empty:
+                return df
+            if not getattr(df.columns, 'duplicated', None):
+                return df
+
+            dup_mask = df.columns.duplicated(keep=False)
+            if not dup_mask.any():
+                return df
+
+            dup_names = [c for c in df.columns[dup_mask] if isinstance(c, str)]
+            # Preserve order of first occurrence
+            seen = set()
+            dup_names = [c for c in dup_names if not (c in seen or seen.add(c))]
+
+            self._log(f"   ⚠️ Duplicate column names detected ({label}): {len(dup_names)}\n")
+
+            out = pd.DataFrame(index=df.index)
+            for col_name in df.columns:
+                if col_name in out.columns:
+                    continue
+                if col_name in dup_names:
+                    cols = [c for c in df.columns if c == col_name]
+                    # If any of the duplicates are numeric, sum numeric values across them
+                    numeric_summed = None
+                    for c in cols:
+                        series = pd.to_numeric(df[c], errors='coerce')
+                        if numeric_summed is None:
+                            numeric_summed = series.fillna(0)
+                        else:
+                            numeric_summed = numeric_summed.add(series.fillna(0), fill_value=0)
+                    if numeric_summed is not None:
+                        out[col_name] = numeric_summed
+                    else:
+                        out[col_name] = df[cols[0]]
+                else:
+                    out[col_name] = df[col_name]
+            return out
+
+        # Keep polarity-specific mapped columns if both exist
+        pos_df = _drop_columns_with_suffix(pos_df, '_neg', label='POS')
+        neg_df = _drop_columns_with_suffix(neg_df, '_pos', label='NEG')
+        pos_class_df = _drop_columns_with_suffix(pos_class_df, '_neg', label='POS_CLASS')
+        neg_class_df = _drop_columns_with_suffix(neg_class_df, '_pos', label='NEG_CLASS')
+
+        # Strip polarity suffixes for final sheet readability
+        pos_df = _strip_suffix(pos_df, '_pos')
+        neg_df = _strip_suffix(neg_df, '_neg')
+        pos_class_df = _strip_suffix(pos_class_df, '_pos')
+        neg_class_df = _strip_suffix(neg_class_df, '_neg')
+
+        # Collapse any duplicate sample columns caused by mapping collisions
+        pos_df = _collapse_duplicate_columns(pos_df, label='POS')
+        neg_df = _collapse_duplicate_columns(neg_df, label='NEG')
+        pos_class_df = _collapse_duplicate_columns(pos_class_df, label='POS_CLASS')
+        neg_class_df = _collapse_duplicate_columns(neg_class_df, label='NEG_CLASS')
 
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
             # Combined sheet first for downstream ID annotation

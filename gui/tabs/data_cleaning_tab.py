@@ -946,6 +946,15 @@ class DataCleaningTab(BaseTab):
                 bg='#f0f0f0', font=('Arial', 8, 'bold'),
                 fg='#e74c3c', wraplength=400, justify='left').pack(anchor='w', padx=5, pady=(0, 5))
         
+        # Rej column filtering option
+        self.lipid_filter_rej = tk.BooleanVar(value=False)
+        tk.Checkbutton(grade_frame,
+                      text="Filter by Rej column (keep only 'False', remove 'True')",
+                      variable=self.lipid_filter_rej,
+                      bg='#f0f0f0',
+                      font=('Arial', 9)).pack(anchor='w', padx=5, pady=(5, 2))
+        
+      
         # Column Name Cleaning Section (NEW)
         column_clean_frame = tk.LabelFrame(left_scrollable_frame, 
                                           text="🧹 Column Name Cleaning", 
@@ -1407,7 +1416,8 @@ class DataCleaningTab(BaseTab):
                     'output_file': output_file,
                     'adduct_filter': selected_adducts if selected_adducts else None,
                     'column_clean_patterns': column_clean_patterns if column_clean_patterns else None,
-                    'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '<= C',
+                    'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '',
+                    'filter_rej': self.lipid_filter_rej.get() if hasattr(self, 'lipid_filter_rej') else False,
                     'column_assignments': getattr(self, 'lipid_verified_assignments', {}),
                     'sample_mapping': sample_mapping,
                     'verified_dataframes': {},
@@ -1419,7 +1429,8 @@ class DataCleaningTab(BaseTab):
                 self.append_to_lipid_log(f"  • LipidID: {assignments.get('LipidID', '(not assigned)')}")
                 self.append_to_lipid_log(f"  • Class: {assignments.get('Class', '(not assigned)')} [REQUIRED FOR CLASS ANALYSIS]")
                 self.append_to_lipid_log(f"  • AdductIon: {assignments.get('AdductIon', '(not assigned)')}")
-                self.append_to_lipid_log(f"  • Sample columns: {len(sample_mapping)} samples\n")
+                self.append_to_lipid_log(f"  • Rej: {assignments.get('Rej', '(not assigned)')} [optional - used if 'Filter by Rej' is enabled]")
+                self.append_to_lipid_log(f"  • Sample columns: {len(sample_mapping) if sample_mapping else 0} samples\n")
                 
                 # Add verified dataframe if available (from verify columns)
                 if hasattr(self, 'lipid_verified_dataframe') and self.lipid_verified_dataframe is not None:
@@ -1438,7 +1449,8 @@ class DataCleaningTab(BaseTab):
                     'output_file': output_file,
                     'adduct_filter': selected_adducts if selected_adducts else None,
                     'column_clean_patterns': column_clean_patterns if column_clean_patterns else None,
-                    'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '<= C',
+                    'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '',
+                    'filter_rej': self.lipid_filter_rej.get() if hasattr(self, 'lipid_filter_rej') else False,
                     'positive_assignments': getattr(self, 'lipid_verified_pos_assignments', {}),
                     'negative_assignments': getattr(self, 'lipid_verified_neg_assignments', {}),
                     'positive_sample_mapping': positive_sample_mapping,  # Separate mapping for positive
@@ -2237,11 +2249,14 @@ class DataCleaningTab(BaseTab):
                     self.root.after(0, lambda: self.progress_text.see('end'))
                     
                     # Show column assignment dialog
+                    # Pass previous assignments if they exist (for session persistence)
+                    existing_assignments = getattr(self, 'verified_assignments', None)
                     result = show_column_assignment_dialog(
                         parent=self.root,
                         df=df,
                         tab_type='data_cleaning',
                         auto_calculate=False,
+                        existing_assignments=existing_assignments,
                     )
                     
                     if result:
@@ -2314,12 +2329,15 @@ class DataCleaningTab(BaseTab):
                     self.root.after(0, lambda: self.progress_text.see('end'))
                     
                     # Show dialog for positive
+                    # Pass previous assignments if they exist (for session persistence)
+                    existing_pos_assignments = getattr(self, 'verified_pos_assignments', None)
                     pos_result = show_column_assignment_dialog(
                         parent=self.root,
                         df=pos_df,
                         tab_type='data_cleaning',
                         auto_calculate=False,
                         dialog_title="Positive File – Data Cleaning Column Assignment",
+                        existing_assignments=existing_pos_assignments,
                     )
                     
                     if not pos_result:
@@ -2361,12 +2379,15 @@ class DataCleaningTab(BaseTab):
                             self.root.after(0, lambda: self.progress_text.see('end'))
                             
                             # Show dialog for negative
+                            # Pass previous assignments if they exist (for session persistence)
+                            existing_neg_assignments = getattr(self, 'verified_neg_assignments', None)
                             neg_result = show_column_assignment_dialog(
                                 parent=self.root,
                                 df=neg_df,
                                 tab_type='data_cleaning',
                                 auto_calculate=False,
                                 dialog_title="Negative File – Data Cleaning Column Assignment",
+                                existing_assignments=existing_neg_assignments,
                             )
                             
                             if neg_result:
@@ -2460,11 +2481,14 @@ class DataCleaningTab(BaseTab):
                     self.root.after(0, lambda: self.lipid_progress_text.see('end'))
                     
                     # Show column assignment dialog for lipid cleaning (use lipid_cleaning tab type)
+                    # Pass previous assignments if they exist (for session persistence)
+                    existing_lipid_assignments = getattr(self, 'lipid_verified_assignments', None)
                     result = show_column_assignment_dialog(
                         parent=self.root,
                         df=df,
                         tab_type='lipid_cleaning',  # Use lipid-specific requirements
                         auto_calculate=False,  # Lipid cleaning doesn't need calculated columns
+                        existing_assignments=existing_lipid_assignments,
                     )
                     
                     if result:
@@ -2483,6 +2507,11 @@ class DataCleaningTab(BaseTab):
                             class_col = assignments.get('Class')
                             class_ok = bool(class_col and class_col in df.columns)
                             lines.append(f"  {'✓' if class_ok else '❌'} Class (REQUIRED for class analysis): {class_col if class_col else 'Not assigned'}")
+
+                            # Rej column (optional but important if user enabled Rej filtering)
+                            rej_col = assignments.get('Rej')
+                            rej_ok = bool(rej_col and rej_col in df.columns)
+                            lines.append(f"  {'✓' if rej_ok else '✗'} Rej (optional): {rej_col if rej_col else 'Not assigned'}")
 
                             # Area columns: trust user assignments first, then fall back to detected sample_cols
                             assigned_area = assignments.get('Area')
@@ -2564,12 +2593,15 @@ class DataCleaningTab(BaseTab):
                     self.root.after(0, lambda: self.lipid_progress_text.see('end'))
                     
                     # Show dialog for positive
+                    # Pass previous assignments if they exist (for session persistence)
+                    existing_lipid_pos_assignments = getattr(self, 'lipid_verified_pos_assignments', None)
                     pos_result = show_column_assignment_dialog(
                         parent=self.root,
                         df=pos_df,
                         tab_type='lipid_cleaning',
                         auto_calculate=False,
                         dialog_title="Positive Lipid File – Column Assignment",
+                        existing_assignments=existing_lipid_pos_assignments,
                     )
                     
                     if not pos_result:
@@ -2611,12 +2643,15 @@ class DataCleaningTab(BaseTab):
                     self.root.after(0, lambda: self.lipid_progress_text.see('end'))
                     
                     # Show dialog for negative
+                    # Pass previous assignments if they exist (for session persistence)
+                    existing_lipid_neg_assignments = getattr(self, 'lipid_verified_neg_assignments', None)
                     neg_result = show_column_assignment_dialog(
                         parent=self.root,
                         df=neg_df,
                         tab_type='lipid_cleaning',
                         auto_calculate=False,
                         dialog_title="Negative Lipid File – Column Assignment",
+                        existing_assignments=existing_lipid_neg_assignments,
                     )
                     
                     if neg_result:
@@ -2634,6 +2669,12 @@ class DataCleaningTab(BaseTab):
                         class_col = assignments.get('Class')
                         class_ok = bool(class_col and class_col in df.columns)
                         lines.append(f"  {'✓' if class_ok else '❌'} Class (REQUIRED for class analysis): {class_col if class_col else 'Not assigned'}")
+
+                        # Rej column (optional but important if user enabled Rej filtering)
+                        rej_col = assignments.get('Rej')
+                        rej_ok = bool(rej_col and rej_col in df.columns)
+                        lines.append(f"  {'✓' if rej_ok else '✗'} Rej (optional): {rej_col if rej_col else 'Not assigned'}")
+
                         # Area columns
                         area_ok = isinstance(sample_cols, list) and len(sample_cols) > 0
                         area_detail = f"{len(sample_cols)} Area column(s)" if area_ok else "No Area columns"

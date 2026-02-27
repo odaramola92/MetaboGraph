@@ -75,6 +75,14 @@ class IDAnnotationTab(BaseTab):
         
         # Annotation cancellation flag
         self._stop_annotation = False
+
+        # Runtime annotation settings (safe defaults for first run)
+        self._selected_id_cols_runtime = []
+        self._effective_id_filter_mode_runtime = False
+        self._skip_id_filtering_runtime = False
+        self._custom_id_search_mode = False
+        self._annotation_mode_runtime = None
+        self._annotation_workers_runtime = None
         
         # Pathway annotation variables
         self.pathway_input_file = tk.StringVar()
@@ -150,11 +158,12 @@ class IDAnnotationTab(BaseTab):
         main_scrollable.bind('<MouseWheel>', _on_main_mousewheel)
         
         # Create three-column layout with proper weights
+        # Reduced weight for left/middle columns (0,1) to make them narrower
         content_frame = tk.Frame(main_scrollable, bg='#f0f0f0')
         content_frame.pack(fill='both', expand=True)
-        content_frame.grid_columnconfigure(0, weight=1)
-        content_frame.grid_columnconfigure(1, weight=1)
-        content_frame.grid_columnconfigure(2, weight=1)
+        content_frame.grid_columnconfigure(0, weight=2, minsize=150)
+        content_frame.grid_columnconfigure(1, weight=2, minsize=150)
+        content_frame.grid_columnconfigure(2, weight=3, minsize=200)
         content_frame.grid_rowconfigure(0, weight=1, minsize=500)  # Increased minimum height for better visibility
 
         # Left/Middle columns - Combined frame with notebook for Metabolites and Lipids tabs
@@ -305,9 +314,9 @@ class IDAnnotationTab(BaseTab):
         content_frame = tk.Frame(parent, bg='#f0f0f0')
         content_frame.pack(fill='both', expand=True, padx=5, pady=5)
         
-        # Configure grid weights to distribute space
-        content_frame.grid_columnconfigure(0, weight=1)
-        content_frame.grid_columnconfigure(1, weight=1)
+        # Configure grid weights to distribute space (reduced weights for narrower columns)
+        content_frame.grid_columnconfigure(0, weight=1, minsize=180)
+        content_frame.grid_columnconfigure(1, weight=1, minsize=180)
         # Use minsize for row instead of weight to ensure content is visible
         content_frame.grid_rowconfigure(0, weight=1, minsize=500)  # Increased minimum height for better visibility
         
@@ -319,9 +328,14 @@ class IDAnnotationTab(BaseTab):
                                 fg='#2c3e50')
         left_frame.grid(row=0, column=0, sticky='nsew', padx=(0, 3))
         
-        # Create canvas and scrollbar for left frame
-        left_canvas = tk.Canvas(left_frame, bg='#f0f0f0')
-        left_scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=left_canvas.yview)
+        # Create container frame for canvas and scrollbars
+        left_scroll_container = tk.Frame(left_frame, bg='#f0f0f0')
+        left_scroll_container.pack(fill='both', expand=True, pady=5)
+        
+        # Create canvas and scrollbars for left frame
+        left_canvas = tk.Canvas(left_scroll_container, bg='#f0f0f0', highlightthickness=0)
+        left_v_scrollbar = ttk.Scrollbar(left_scroll_container, orient="vertical", command=left_canvas.yview)
+        left_h_scrollbar = ttk.Scrollbar(left_scroll_container, orient="horizontal", command=left_canvas.xview)
         left_scrollable_frame = tk.Frame(left_canvas, bg='#f0f0f0')
         
         left_scrollable_frame.bind(
@@ -330,27 +344,38 @@ class IDAnnotationTab(BaseTab):
         )
         
         canvas_window = left_canvas.create_window((0, 0), window=left_scrollable_frame, anchor="nw")
-        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_canvas.configure(yscrollcommand=left_v_scrollbar.set, xscrollcommand=left_h_scrollbar.set)
         
         def configure_scroll_region(event):
             left_canvas.configure(scrollregion=left_canvas.bbox("all"))
-            canvas_width = event.width
-            left_canvas.itemconfig(canvas_window, width=canvas_width)
+            # Only expand width if scrollable frame is smaller than canvas
+            if left_scrollable_frame.winfo_reqwidth() < event.width:
+                left_canvas.itemconfig(canvas_window, width=event.width)
         
         left_canvas.bind('<Configure>', configure_scroll_region)
-        left_canvas.pack(side="left", fill="both", pady=5, expand=True)
-        left_scrollbar.pack(side="right", fill="y", pady=5)
+        
+        # Grid layout for canvas and scrollbars
+        left_canvas.grid(row=0, column=0, sticky='nsew')
+        left_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        left_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        left_scroll_container.grid_rowconfigure(0, weight=1)
+        left_scroll_container.grid_columnconfigure(0, weight=1)
         
         def _on_left_mousewheel(event):
             left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         
+        def _on_left_shift_mousewheel(event):
+            left_canvas.xview_scroll(int(-1*(event.delta/120)), "units")
+        
         def _bind_mousewheel_recursive(widget):
             """Recursively bind mousewheel to all child widgets"""
             widget.bind("<MouseWheel>", _on_left_mousewheel)
+            widget.bind("<Shift-MouseWheel>", _on_left_shift_mousewheel)
             for child in widget.winfo_children():
                 _bind_mousewheel_recursive(child)
         
         left_canvas.bind("<MouseWheel>", _on_left_mousewheel)
+        left_canvas.bind("<Shift-MouseWheel>", _on_left_shift_mousewheel)
         # Schedule recursive binding after all widgets are created
         left_scrollable_frame.after(100, lambda: _bind_mousewheel_recursive(left_scrollable_frame))
         
@@ -362,13 +387,13 @@ class IDAnnotationTab(BaseTab):
             font=('Arial', 16, 'bold')
         ).pack(anchor='w', padx=8, pady=(10, 0))
 
-        tk.Label(
-            left_scrollable_frame,
-            text="This subtab uses cleaned metabolite data from the Data Cleaning tab.",
-            bg='#f0f0f0',
-            fg='#7f8c8d',
-            font=('Arial', 9, 'italic')
-        ).pack(anchor='w', padx=8, pady=(0, 10))
+        # tk.Label(
+        #     left_scrollable_frame,
+        #     text="This subtab uses cleaned metabolite data from the Data Cleaning tab.",
+        #     bg='#f0f0f0',
+        #     fg='#7f8c8d',
+        #     font=('Arial', 9, 'italic')
+        # ).pack(anchor='w', padx=8, pady=(0, 10))
 
         # File selection frame
         file_frame = tk.LabelFrame(left_scrollable_frame, 
@@ -539,9 +564,14 @@ class IDAnnotationTab(BaseTab):
                                     fg='#2c3e50')
         middle_frame.grid(row=0, column=1, sticky='nsew', padx=(3, 0))
         
-        # Create canvas and scrollbar for middle frame
-        middle_canvas = tk.Canvas(middle_frame, bg='#f0f0f0')
-        middle_scrollbar = ttk.Scrollbar(middle_frame, orient="vertical", command=middle_canvas.yview)
+        # Create container frame for canvas and scrollbars
+        middle_scroll_container = tk.Frame(middle_frame, bg='#f0f0f0')
+        middle_scroll_container.pack(fill='both', expand=True, pady=5)
+        
+        # Create canvas and scrollbars for middle frame
+        middle_canvas = tk.Canvas(middle_scroll_container, bg='#f0f0f0', highlightthickness=0)
+        middle_v_scrollbar = ttk.Scrollbar(middle_scroll_container, orient="vertical", command=middle_canvas.yview)
+        middle_h_scrollbar = ttk.Scrollbar(middle_scroll_container, orient="horizontal", command=middle_canvas.xview)
         middle_scrollable_frame = tk.Frame(middle_canvas, bg='#f0f0f0')
         
         middle_scrollable_frame.bind(
@@ -550,27 +580,38 @@ class IDAnnotationTab(BaseTab):
         )
         
         middle_canvas_window = middle_canvas.create_window((0, 0), window=middle_scrollable_frame, anchor="nw")
-        middle_canvas.configure(yscrollcommand=middle_scrollbar.set)
+        middle_canvas.configure(yscrollcommand=middle_v_scrollbar.set, xscrollcommand=middle_h_scrollbar.set)
         
         def configure_middle_scroll_region(event):
             middle_canvas.configure(scrollregion=middle_canvas.bbox("all"))
-            canvas_width = event.width
-            middle_canvas.itemconfig(middle_canvas_window, width=canvas_width)
+            # Only expand width if scrollable frame is smaller than canvas
+            if middle_scrollable_frame.winfo_reqwidth() < event.width:
+                middle_canvas.itemconfig(middle_canvas_window, width=event.width)
         
         middle_canvas.bind('<Configure>', configure_middle_scroll_region)
-        middle_canvas.pack(side="left", fill="both", pady=5, expand=True)
-        middle_scrollbar.pack(side="right", fill="y", pady=5)
+        
+        # Grid layout for canvas and scrollbars
+        middle_canvas.grid(row=0, column=0, sticky='nsew')
+        middle_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        middle_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        middle_scroll_container.grid_rowconfigure(0, weight=1)
+        middle_scroll_container.grid_columnconfigure(0, weight=1)
         
         def _on_middle_mousewheel(event):
             middle_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
         
+        def _on_middle_shift_mousewheel(event):
+            middle_canvas.xview_scroll(int(-1*(event.delta/120)), "units")
+        
         def _bind_middle_mousewheel_recursive(widget):
             """Recursively bind mousewheel to all child widgets"""
             widget.bind("<MouseWheel>", _on_middle_mousewheel)
+            widget.bind("<Shift-MouseWheel>", _on_middle_shift_mousewheel)
             for child in widget.winfo_children():
                 _bind_middle_mousewheel_recursive(child)
         
         middle_canvas.bind("<MouseWheel>", _on_middle_mousewheel)
+        middle_canvas.bind("<Shift-MouseWheel>", _on_middle_shift_mousewheel)
         # Schedule recursive binding after all widgets are created
         middle_scrollable_frame.after(100, lambda: _bind_middle_mousewheel_recursive(middle_scrollable_frame))
         
@@ -660,14 +701,44 @@ class IDAnnotationTab(BaseTab):
                                     font=('Arial', 9, 'bold'))
         posneg_frame.pack(fill='x', padx=5, pady=(8, 5))
 
+        # ===== SKIP ID FILTERING CHECKBOX =====
+        skip_filter_frame = tk.Frame(posneg_frame, bg='#f0f0f0')
+        skip_filter_frame.pack(fill='x', padx=8, pady=(5, 8), side='top')
+        
+        # Load preferences first
+        self._loaded_prefs = self.load_id_annotation_prefs()
+        
+        # Default to unchecked - only internally set True for custom mode
+        self.skip_id_filtering_var = tk.BooleanVar(value=False)
+        skip_cb = tk.Checkbutton(
+            skip_filter_frame,
+            text="☑ Skip ID Filtering",
+            variable=self.skip_id_filtering_var,
+            bg='#f0f0f0',
+            font=('Arial', 8, 'bold'),
+            fg='#2c3e50',
+            command=self._toggle_id_filter_controls
+        )
+        skip_cb.pack(anchor='w', side='left', padx=(0, 10))
+        
+        # skip_info = tk.Label(
+        #     skip_filter_frame,
+        #     text="When checked: Save all metabolites (with or without IDs). ID filtering section below will be disabled.",
+        #     wraplength=380,
+        #     justify='left',
+        #     bg='#f0f0f0',
+        #     fg='#7f8c8d',
+        #     font=('Arial', 7, 'italic')
+        # )
+        # skip_info.pack(anchor='w', side='left')
+
         # ID column checkbox selection panel
         self.available_id_columns = [
             'HMDB_ID', 'PubChem_CID', 'KEGG_ID', 'LipidMaps_ID',
             'ChEBI_ID', 'CAS', 'SMILES', 'InChI', 'InChIKey'
         ]
 
-        # Load preferences
-        self._loaded_prefs = self.load_id_annotation_prefs()
+        # Get preference selections
         pref_selected = set(self._loaded_prefs.get('id_selected_columns', self.available_id_columns))
 
         idcols_outer = tk.LabelFrame(posneg_frame, text="ID Columns to Use For Filtering", bg='#f0f0f0')
@@ -722,6 +793,9 @@ class IDAnnotationTab(BaseTab):
                                                 font=('Arial', 7, 'italic'), fg='#7f8c8d')
         self.id_selected_count_label.pack(anchor='w', padx=8, pady=(0, 3))
         self.update_id_selected_count()
+        
+        # Apply initial toggle state based on loaded preferences
+        self._toggle_id_filter_controls()
 
         # Info label
         tk.Label(idcols_outer,
@@ -804,9 +878,14 @@ class IDAnnotationTab(BaseTab):
         content_frame.grid_columnconfigure(0, weight=1)
         content_frame.grid_rowconfigure(0, weight=1)
 
-        # Scrollable wrapper for left column
-        left_canvas = tk.Canvas(left_frame, bg='#f0f0f0', highlightthickness=0)
-        left_scrollbar = ttk.Scrollbar(left_frame, orient='vertical', command=left_canvas.yview)
+        # Create container frame for canvas and scrollbars
+        left_scroll_container = tk.Frame(left_frame, bg='#f0f0f0')
+        left_scroll_container.pack(fill='both', expand=True, padx=5, pady=5)
+
+        # Scrollable wrapper for left column with both scrollbars
+        left_canvas = tk.Canvas(left_scroll_container, bg='#f0f0f0', highlightthickness=0)
+        left_v_scrollbar = ttk.Scrollbar(left_scroll_container, orient='vertical', command=left_canvas.yview)
+        left_h_scrollbar = ttk.Scrollbar(left_scroll_container, orient='horizontal', command=left_canvas.xview)
         left_scrollable = tk.Frame(left_canvas, bg='#f0f0f0')
 
         left_scrollable.bind(
@@ -815,24 +894,36 @@ class IDAnnotationTab(BaseTab):
         )
 
         canvas_window = left_canvas.create_window((0, 0), window=left_scrollable, anchor='nw')
-        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_canvas.configure(yscrollcommand=left_v_scrollbar.set, xscrollcommand=left_h_scrollbar.set)
 
         def _configure_left_canvas(event):
             left_canvas.configure(scrollregion=left_canvas.bbox('all'))
             try:
-                left_canvas.itemconfig(canvas_window, width=event.width)
+                # Only expand width if scrollable frame is smaller than canvas
+                if left_scrollable.winfo_reqwidth() < event.width:
+                    left_canvas.itemconfig(canvas_window, width=event.width)
             except Exception:
                 pass
 
         left_canvas.bind('<Configure>', _configure_left_canvas)
-        left_canvas.pack(side='left', fill='both', expand=True, padx=5, pady=5)
-        left_scrollbar.pack(side='right', fill='y', pady=5)
+        
+        # Grid layout for canvas and scrollbars
+        left_canvas.grid(row=0, column=0, sticky='nsew')
+        left_v_scrollbar.grid(row=0, column=1, sticky='ns')
+        left_h_scrollbar.grid(row=1, column=0, sticky='ew')
+        left_scroll_container.grid_rowconfigure(0, weight=1)
+        left_scroll_container.grid_columnconfigure(0, weight=1)
 
         def _on_left_wheel(event):
             left_canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
 
+        def _on_left_shift_wheel(event):
+            left_canvas.xview_scroll(int(-1 * (event.delta / 120)), 'units')
+
         left_canvas.bind('<MouseWheel>', _on_left_wheel)
+        left_canvas.bind('<Shift-MouseWheel>', _on_left_shift_wheel)
         left_scrollable.bind('<MouseWheel>', _on_left_wheel)
+        left_scrollable.bind('<Shift-MouseWheel>', _on_left_shift_wheel)
 
         # Title and description
         tk.Label(
@@ -843,15 +934,15 @@ class IDAnnotationTab(BaseTab):
             font=('Arial', 16, 'bold')
         ).pack(anchor='w', padx=8, pady=(10, 0))
 
-        tk.Label(
-            left_scrollable,
-            text="Uses cleaned lipid data from the Data Cleaning tab to perform ID annotation only (no pathway annotation).",
-            bg='#f0f0f0',
-            fg='#7f8c8d',
-            wraplength=380,
-            justify='left',
-            font=('Arial', 9, 'italic')
-        ).pack(anchor='w', padx=8, pady=(0, 10))
+        # tk.Label(
+        #     left_scrollable,
+        #     text="Uses cleaned lipid data from the Data Cleaning tab to perform ID annotation only (no pathway annotation).",
+        #     bg='#f0f0f0',
+        #     fg='#7f8c8d',
+        #     wraplength=380,
+        #     justify='left',
+        #     font=('Arial', 9, 'italic')
+        # ).pack(anchor='w', padx=8, pady=(0, 10))
 
         # File selection frame
         file_frame = tk.LabelFrame(left_scrollable,
@@ -971,6 +1062,8 @@ class IDAnnotationTab(BaseTab):
             self.id_verify_frame.pack(fill='x', padx=5, pady=(5, 10))
             self.id_verify_columns_button.pack(fill='x', pady=2)
             self.id_verify_warning_label.pack(anchor='w', pady=(2, 0))
+            # Note: skip_id_filtering is enforced programmatically in start_id_annotation()
+            # for custom mode - we don't change the checkbox here to avoid affecting standard mode
         else:
             # Hide for standard mode - no column verification needed
             self.id_verify_frame.pack_forget()
@@ -1147,19 +1240,26 @@ class IDAnnotationTab(BaseTab):
         if hasattr(self, 'sync_id_selection_string'):
             self.sync_id_selection_string()
 
+        # Check if custom ID search mode is enabled FIRST
+        self._custom_id_search_mode = self.id_annotation_mode.get() == 'custom' if hasattr(self, 'id_annotation_mode') else False
+        
         # Derive selected ID columns list for passing to annotator
         selected_id_cols = [c for c, v in getattr(self, 'id_filter_vars', {}).items() if v.get()]
-        # Automatic rule: filtering active iff at least one column selected
-        effective_filter_mode = len(selected_id_cols) > 0
+        
+        # CRITICAL: Custom ID Search mode should NEVER filter rows - always skip filtering
+        skip_id_filtering = getattr(self, 'skip_id_filtering_var', tk.BooleanVar(value=False)).get()
+        if self._custom_id_search_mode:
+            skip_id_filtering = True  # Force skip filtering for custom mode
+            
+        # Automatic rule: filtering active iff at least one column selected AND skip_id_filtering is False
+        effective_filter_mode = (len(selected_id_cols) > 0) and (not skip_id_filtering)
 
         # Attach for thread consumption
-        self._selected_id_cols_runtime = selected_id_cols
+        self._selected_id_cols_runtime = selected_id_cols if not skip_id_filtering else []
         self._effective_id_filter_mode_runtime = effective_filter_mode
+        self._skip_id_filtering_runtime = skip_id_filtering
         self._annotation_mode_runtime = mode  # Store mode for run_id_annotation
         self._annotation_workers_runtime = workers  # Store workers count
-        
-        # Check if custom ID search mode is enabled
-        self._custom_id_search_mode = self.id_annotation_mode.get() == 'custom' if hasattr(self, 'id_annotation_mode') else False
         
         # Warn if custom mode is enabled but columns haven't been verified
         if self._custom_id_search_mode:
@@ -1316,6 +1416,7 @@ class IDAnnotationTab(BaseTab):
     # Get current filter settings
         self.sync_id_selection_string()  # Sync checkbox state to string var
         selected_id_cols = [c for c, v in self.id_filter_vars.items() if v.get()]
+        skip_id_filtering = getattr(self, 'skip_id_filtering_var', tk.BooleanVar(value=False)).get()
         ms2_filter_mode = self.id_ms2_filter_var.get()
         require_endogenous = self.require_endogenous_yes.get()
         
@@ -1325,7 +1426,10 @@ class IDAnnotationTab(BaseTab):
         self.id_progress_text.insert(tk.END, f"Starting re-filter process...\n")
         self.id_progress_text.insert(tk.END, f"Input: {input_file}\n")
         self.id_progress_text.insert(tk.END, f"Output: {output_file}\n")
-        self.id_progress_text.insert(tk.END, f"Selected ID columns: {', '.join(selected_id_cols) if selected_id_cols else 'None (no ID filtering)'}\n")
+        if skip_id_filtering:
+            self.id_progress_text.insert(tk.END, f"Skip ID Filtering: YES (all metabolites will be saved)\n")
+        else:
+            self.id_progress_text.insert(tk.END, f"Selected ID columns: {', '.join(selected_id_cols) if selected_id_cols else 'None (no ID filtering)'}\n")
         self.id_progress_text.insert(tk.END, f"MS2 filter: {ms2_filter_mode}\n")
         self.id_progress_text.insert(tk.END, f"Require Endogenous_Source=Yes: {require_endogenous}\n")
         self.id_progress_text.insert(tk.END, f"\nLoading existing annotation file...\n")
@@ -1364,7 +1468,8 @@ class IDAnnotationTab(BaseTab):
             result = refilter_annotated_excel(
                 input_file=input_file,
                 output_file=output_file,
-                selected_id_columns=selected_id_cols,
+                selected_id_columns=selected_id_cols if not skip_id_filtering else [],
+                skip_id_filtering=skip_id_filtering,
                 ms2_filter_mode=ms2_filter_mode,
                 require_endogenous_yes=require_endogenous,
                 progress_callback=lambda msg: self._update_refilter_progress(msg)
@@ -1540,9 +1645,12 @@ class IDAnnotationTab(BaseTab):
                         remaining_sec = int(remaining % 60)
                         detailed_msg += f" | ETA: {remaining_min:02d}:{remaining_sec:02d}"
                 
-                # Direct GUI update (not scheduled) for immediate response
+                # Thread-safe GUI update using root.after() - CRITICAL for background thread updates
                 try:
-                    self.update_id_progress_with_percentage(percentage, detailed_msg)
+                    # Capture variables for lambda closure
+                    pct = percentage
+                    dmsg = detailed_msg
+                    self.root.after(0, lambda p=pct, m=dmsg: self.update_id_progress_with_percentage(p, m))
                 except Exception as e:
                     pass  # Fail silently if GUI update fails
             
@@ -1800,7 +1908,8 @@ class IDAnnotationTab(BaseTab):
                 pos_df=pos_df,                                  # Pass Positive DataFrame
                 neg_df=neg_df,                                  # Pass Negative DataFrame
                 id_filter_mode=id_filter_mode,                  # Pass ID filter mode
-                selected_id_columns=selected_id_cols,           # Pass selected ID columns
+                selected_id_columns=selected_id_cols if not self._skip_id_filtering_runtime else [],  # Pass selected ID columns
+                skip_id_filtering=self._skip_id_filtering_runtime,  # Pass skip ID filtering flag
                 require_endogenous_yes=require_endogenous       # Pass endogenous filter setting
             )
             
@@ -2171,6 +2280,7 @@ class IDAnnotationTab(BaseTab):
                 'HMDB_ID', 'PubChem_CID', 'KEGG_ID', 'LipidMaps_ID',
                 'ChEBI_ID', 'CAS', 'SMILES', 'InChI', 'InChIKey'
             ],
+            'skip_id_filtering': False,
             'ms2_filter': 'none',
             'require_endogenous_yes': False,
             'dedup_rt_window_minutes': 2.0
@@ -2196,6 +2306,7 @@ class IDAnnotationTab(BaseTab):
         # Collect current preferences from UI
         prefs = {
             'id_selected_columns': [col for col, var in self.id_filter_vars.items() if var.get()],
+            'skip_id_filtering': self.skip_id_filtering_var.get() if hasattr(self, 'skip_id_filtering_var') else False,
             'ms2_filter': self._effective_ms2_filter_mode_runtime if hasattr(self, '_effective_ms2_filter_mode_runtime') else 'none',
             'require_endogenous_yes': self.require_endogenous_yes.get() if hasattr(self, 'require_endogenous_yes') else False,
             'dedup_rt_window_minutes': float(self.dedup_rt_window.get()) if hasattr(self, 'dedup_rt_window') else 2.0
@@ -2227,6 +2338,43 @@ class IDAnnotationTab(BaseTab):
         except Exception as e:
             # Fail silently but log to console for debugging
             print(f"update_id_selected_count error: {e}")
+    
+    def _toggle_id_filter_controls(self):
+        """Enable/disable ID filter controls based on skip_id_filtering_var state."""
+        skip_filtering = getattr(self, 'skip_id_filtering_var', tk.BooleanVar(value=False)).get()
+        
+        # Helper function to get all descendants of a widget
+        def get_all_descendants(widget):
+            descendants = []
+            for child in widget.winfo_children():
+                descendants.append(child)
+                descendants.extend(get_all_descendants(child))
+            return descendants
+        
+        # Find the frame and disable/enable all its children
+        try:
+            for widget in get_all_descendants(self.frame):
+                # Disable ID column checkboxes and buttons
+                if isinstance(widget, tk.Checkbutton) and hasattr(widget, 'cget'):
+                    text = widget.cget('text')
+                    if text in self.available_id_columns:
+                        widget.config(state='disabled' if skip_filtering else 'normal')
+                elif isinstance(widget, tk.Button) and hasattr(widget, 'cget'):
+                    text = widget.cget('text')
+                    if text in ['Select All', 'Deselect All']:
+                        widget.config(state='disabled' if skip_filtering else 'normal')
+            
+            # Update label
+            if hasattr(self, 'id_selected_count_label'):
+                if skip_filtering:
+                    self.id_selected_count_label.config(
+                        text="ID filtering is disabled (all metabolites will be saved)",
+                        fg='#27ae60'
+                    )
+                else:
+                    self.update_id_selected_count()
+        except Exception as e:
+            print(f"Error toggling ID filter controls: {e}")
     
     def auto_detect_sheets(self, file_var, combo_widget, sheet_var):
         """Auto-detect and populate sheet names in a combobox from an Excel file"""
