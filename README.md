@@ -61,16 +61,12 @@
 - Database validation and update checking
 - Local storage for offline analysis
 
-## 📸 Screenshots
-
-*[Add screenshots of your application here]*
-
 ## 🚀 Quick Start
 
 ### Installation
 
 #### Option 1: Standalone Executable (Windows)
-1. Download the latest release from [Releases](link-to-releases)
+1. Download the latest release from [Releases](ftp://massive-ftp.ucsd.edu/v12/MSV000100627/)
 2. Extract the ZIP file
 3. Run the executable (named `MetaboGraph_v<version>.exe` or similar – the version matches the release tag)
 4. Set up databases (see [Database Setup Guide](docs/user-guides/04-database-setup.md))
