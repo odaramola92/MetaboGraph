@@ -247,12 +247,6 @@ COLUMN_TYPES = {
         'examples': ['Grade[DU143_3D_neg_1]', 'Grade[s1-1]'],
         'category': 'Sample Data',
     },
-    'Rej': {
-        'description': 'Rejected flag column (optional lipid quality filter)',
-        'required_by': [],
-        'examples': ['Rej', 'Rejected', 'Reject'],
-        'category': 'Lipid Data',
-    },
     'LipidID': {
         'description': 'Lipid identifier (required for lipid data)',
         'required_by': ['lipid_cleaning'],
@@ -408,22 +402,20 @@ TAB_REQUIREMENTS = {
     },
     'id_annotation': {
         'required': ['Feature ID'],
-        'optional': ['MS2', 'MS2 Purity [%]'],
+        'optional': ['Formula'],
         'title': 'ID Annotation Column Assignment',
-        'description': 'Verify columns for ID annotation. Required: Feature ID (metabolite name). Optional: MS2 and MS2 Purity [%] for confidence filtering. Curated IDs (HMDB, KEGG, LipidMaps) are generated automatically during ID search.',
+        'description': 'Verify columns for Custom ID Search. Required: Feature ID (metabolite name). Optional: Formula for additional validation.',
         'detect_samples': False,
-        'multi_sheet': True,
+        'multi_sheet': True,  # Enable multi-sheet support
         'column_mapping': {
-            'Feature ID': 'Name',
-            'MS2': 'MS2',
-            'MS2 Purity [%]': 'MS2_Purity',
+            'Feature ID': 'Name',  # Feature ID is the metabolite Name for ID annotation
         }
     },
     'lipid_cleaning': {
         'required': ['LipidID'],  # Use LipidID directly, no abstraction
-        'optional': ['Class', 'AdductIon', 'Area', 'Grade', 'Rej', 'ObsMz', 'ObsRt'],
+        'optional': ['Class', 'AdductIon', 'Area', 'Grade', 'ObsMz', 'ObsRt'],
         'title': 'Lipid Data Cleaning Column Assignment',
-        'description': 'Verify columns for lipid data cleaning. Required: LipidID. Optional: Area[...] columns (sample data), Grade[...] columns (quality scores), Rej (rejected rows flag), ObsMz, ObsRt, Class, AdductIon.',
+        'description': 'Verify columns for lipid data cleaning. Required: LipidID. Optional: Area[...] columns (sample data), Grade[...] columns (quality scores), ObsMz, ObsRt, Class, AdductIon.',
         'detect_samples': False,
         'multi_sheet': False,
         'detect_lipid_area': True,  # Enable Area[ ] column detection for lipids
@@ -539,11 +531,9 @@ class ColumnDetector:
             'RT [min]': [r'rt\[min', r'rtmin', r'^rt$'],  # RT [min], RT[min], RTmin, RT
             'Polarity': [r'polarity', r'^pol$'],  # Polarity, Pol
             'MS2': [r'ms2', r'msms'],  # MS2, MSMS
-            'MS2 Purity [%]': [r'ms2purity', r'msmspurity'],  # MS2_Purity, MS2 Purity [%]
             'LipidID': [r'lipidid', r'^lipid$'],  # LipidID or Lipid
             'Area': [r'^area\['],  # Lipid area columns: Must start exactly with Area[ (no prefix like OrgArea or MeanArea)
             'Grade': [r'^grade\['],  # Lipid grade columns: Quality scores for filtering
-            'Rej': [r'^rej$', r'^rejected$', r'^reject$'],  # Rejected-row flag column
             'AdductIon': [r'adduct', r'^ion$'],  # AdductIon, Adduct, or Ion
             'ObsMz': [r'^calcmz', r'calcmz'],  # CalcMz column
             'ObsRt': [r'^basert', r'basert'],  # BaseRt column
@@ -1110,8 +1100,6 @@ class ColumnAssignmentDialog(tk.Toplevel):
         self.available_sheets = []
         self.selected_sheet = None
         self.detection_complete = False
-        self._sheet_assignments_cache: Dict[str, Dict[str, str]] = {}
-        self._current_sheet_name: Optional[str] = None
         
         # Get requirements for this tab
         self.tab_config = TAB_REQUIREMENTS.get(tab_type, TAB_REQUIREMENTS['data_cleaning'])
@@ -1375,23 +1363,13 @@ class ColumnAssignmentDialog(tk.Toplevel):
                 width=50
             )
             sheet_combo.pack(side='left', padx=5)
-            sheet_combo.bind('<<ComboboxSelected>>', self._on_sheet_changed)
-            self._current_sheet_name = sheet_value
             
             ttk.Label(
                 sheet_frame,
-                text='(Choose Positive or Negative sheet to map columns for that polarity)',
+                text='(Typically "Combined" contains all metabolites for ID search)',
                 font=('Arial', 8),
                 foreground='gray'
             ).pack(side='left', padx=5)
-
-            self.sheet_info_label = ttk.Label(
-                sheet_frame,
-                text=f"Loaded columns: {len(self.df.columns)}",
-                font=('Arial', 8),
-                foreground='#3498db'
-            )
-            self.sheet_info_label.pack(side='left', padx=10)
         
         # TWO-COLUMN LAYOUT for Sample/Feature info and Validation (reduces vertical space)
         # Only for statistics and visualization tabs
@@ -2297,16 +2275,15 @@ class ColumnAssignmentDialog(tk.Toplevel):
         if self.existing_assignments:
             # Convert existing assignments (col_type: excel_col) to (excel_col: col_type)
             for col_type, col_name in self.existing_assignments.items():
-                # Handle both list (multiple columns) and string (single column) values
-                if isinstance(col_name, list):
-                    # Multiple columns assigned to same type
-                    for c in col_name:
-                        if c and c in self.df.columns:
-                            final_assignments[c] = col_type
-                elif col_name and col_name in self.df.columns:
-                    # Single column assigned to this type
-                    final_assignments[col_name] = col_type
-                    assigned_types[col_type] = col_name
+                if col_name and col_name in self.df.columns:
+                    if isinstance(col_name, list):
+                        # Multiple columns assigned to same type
+                        for c in col_name:
+                            if c in self.df.columns:
+                                final_assignments[c] = col_type
+                    else:
+                        final_assignments[col_name] = col_type
+                        assigned_types[col_type] = col_name
         
         # If we found an exact 'Name' column, pre-assign it as Feature ID (unless already assigned)
         if exact_name_col and 'Feature ID' in (self.tab_config['required'] + self.tab_config.get('optional', [])):
@@ -2447,83 +2424,6 @@ class ColumnAssignmentDialog(tk.Toplevel):
         
         # Update scroll region
         self.scrollable_frame.update_idletasks()
-
-    def _capture_current_sheet_assignments(self):
-        """Persist current dropdown selections for the active sheet before switching."""
-        if not hasattr(self, 'sheet_var') or not self.assignments:
-            return
-
-        sheet_name = self.sheet_var.get().strip() or self._current_sheet_name
-        if not sheet_name:
-            return
-
-        cached: Dict[str, str] = {}
-        for excel_col, var in self.assignments.items():
-            selected = var.get()
-            if selected and selected != 'Ignore':
-                cached[excel_col] = selected
-
-        self._sheet_assignments_cache[sheet_name] = cached
-
-    def _restore_sheet_assignments(self, sheet_name: str):
-        """Restore previous selections for a sheet after rows are rebuilt."""
-        cached = self._sheet_assignments_cache.get(sheet_name, {})
-        if not cached:
-            return
-
-        for excel_col, assigned_type in cached.items():
-            if excel_col in self.assignments:
-                self.assignments[excel_col].set(assigned_type)
-
-    def _sheet_has_required_mappings(self, sheet_name: str, current_assignments: Optional[Dict[str, Optional[str]]] = None) -> bool:
-        """Check whether all required roles are assigned for a given sheet."""
-        required_roles = self.tab_config.get('required', [])
-        if not required_roles:
-            return True
-
-        if current_assignments is not None:
-            assigned_roles = {role for role in current_assignments.values() if role}
-        else:
-            cached = self._sheet_assignments_cache.get(sheet_name, {})
-            assigned_roles = set(cached.values())
-
-        return all(role in assigned_roles for role in required_roles)
-
-    def _on_sheet_changed(self, event=None):
-        """Reload column mapping UI when user switches Excel sheet."""
-        if not self.excel_file_path or not hasattr(self, 'sheet_var'):
-            return
-
-        selected_sheet = self.sheet_var.get().strip()
-        if not selected_sheet:
-            return
-
-        try:
-            # Save current sheet mapping before switching.
-            self._capture_current_sheet_assignments()
-
-            # Load the selected worksheet and refresh detections.
-            self.df = pd.read_excel(self.excel_file_path, sheet_name=selected_sheet)
-            self.selected_sheet = selected_sheet
-            self.detected = ColumnDetector.auto_detect_all(self.df)
-
-            if self.tab_config.get('detect_samples', False):
-                _, self.sample_cols = ColumnDetector.detect_feature_and_sample_columns(self.df)
-
-            # Reset per-column widgets and rebuild rows for the new sheet columns.
-            self.assignments = {}
-            self.combo_widgets = {}
-            self._rebuild_column_rows()
-            self._restore_sheet_assignments(selected_sheet)
-            self._current_sheet_name = selected_sheet
-
-            if hasattr(self, 'sheet_info_label'):
-                self.sheet_info_label.config(text=f"Loaded columns: {len(self.df.columns)}")
-
-            logger.info(f"Updated ID annotation assignment UI for sheet: {selected_sheet}")
-        except Exception as e:
-            logger.error(f"Failed to switch sheet to {selected_sheet}: {e}")
-            messagebox.showerror('Sheet Load Error', f"Could not load sheet '{selected_sheet}': {str(e)}")
     
     def _auto_detect_column_type(self, excel_col: str) -> str:
         """Auto-detect the best column type for an Excel column using proper detection patterns."""
@@ -2643,37 +2543,6 @@ class ColumnAssignmentDialog(tk.Toplevel):
             # Collect Group Area assignments
             if col_type == 'Group Area':
                 group_area_assigned_cols.append(excel_col)
-
-        # For ID annotation with Positive/Negative sheets, remind user before closing
-        # if one polarity has not been mapped yet.
-        if self.tab_type == 'id_annotation' and self.available_sheets:
-            self._capture_current_sheet_assignments()
-            selected_sheet_name = getattr(self, 'sheet_var', None).get().strip() if hasattr(self, 'sheet_var') else ''
-
-            polarity_sheets = [
-                sheet for sheet in self.available_sheets
-                if str(sheet).strip().lower() in {'positive', 'negative'}
-            ]
-
-            missing_polarity = []
-            for sheet in polarity_sheets:
-                if selected_sheet_name and str(sheet) == selected_sheet_name:
-                    if not self._sheet_has_required_mappings(sheet, assignments):
-                        missing_polarity.append(sheet)
-                else:
-                    if not self._sheet_has_required_mappings(sheet):
-                        missing_polarity.append(sheet)
-
-            if missing_polarity:
-                missing_text = ', '.join(missing_polarity)
-                proceed = messagebox.askyesno(
-                    'Polarity Mapping Reminder',
-                    f"You have not mapped required columns for: {missing_text}.\n\n"
-                    "Click 'No' to go back, switch sheet, and complete mapping.\n"
-                    "Click 'Yes' to continue and close anyway."
-                )
-                if not proceed:
-                    return
         
         # Apply trailing text removal if requested
         if hasattr(self, 'remove_trailing_text_var') and self.remove_trailing_text_var.get():
@@ -2867,18 +2736,6 @@ class ColumnAssignmentDialog(tk.Toplevel):
                 updated_sample_cols = area_cols + grade_cols
         else:
             updated_sample_cols = self.sample_cols
-
-        mapped_sheets: List[str] = []
-        if self.tab_type == 'id_annotation' and self.available_sheets:
-            self._capture_current_sheet_assignments()
-            selected_sheet_name = getattr(self, 'sheet_var', None).get().strip() if hasattr(self, 'sheet_var') else ''
-            for sheet in self.available_sheets:
-                if selected_sheet_name and str(sheet) == selected_sheet_name:
-                    if self._sheet_has_required_mappings(sheet, assignments):
-                        mapped_sheets.append(str(sheet))
-                else:
-                    if self._sheet_has_required_mappings(sheet):
-                        mapped_sheets.append(str(sheet))
         
         self.result = {
             'assignments': reversed_assignments,
@@ -2886,7 +2743,6 @@ class ColumnAssignmentDialog(tk.Toplevel):
             'tab_type': self.tab_type,
             'sample_cols': updated_sample_cols,  # Use updated sample columns excluding verified stats
             'selected_sheet': getattr(self, 'sheet_var', None) and self.sheet_var.get(),  # Include selected sheet for ID annotation
-            'mapped_sheets': mapped_sheets,
         }
         self.modified_df = modified_df
         

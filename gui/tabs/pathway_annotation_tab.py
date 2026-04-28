@@ -571,8 +571,9 @@ class PathwayAnnotationTab(BaseTab):
             network_tab = getattr(self, 'network_tab_instance', None)
             
             if network_tab and hasattr(network_tab, 'load_annotated_data'):
-                # Load data into network tab
-                network_tab.load_annotated_data(save_path, annotated_df)
+                # Load from saved file path so auto-load and manual Browse import
+                # follow the exact same parsing/normalization path.
+                network_tab.load_annotated_data(save_path)
                 log_message(f"✅ Data loaded into Network Analysis tab\n")
                 
                 # Switch to Network Analysis subtab (with small delay for UI update)
@@ -632,7 +633,8 @@ class PathwayAnnotationTab(BaseTab):
                 if log_message:
                     log_message("⚠️ Annotated data not ready for Network Analysis tab\n")
                 return
-            network_tab.load_annotated_data(excel_path, annotated_df.copy())
+            # Use saved file path to ensure consistency with manual Browse import.
+            network_tab.load_annotated_data(excel_path)
             if log_message:
                 log_message("✅ Network Analysis tab refreshed with latest annotation\n")
             # Keep UI in sync by switching tabs (non-blocking)

@@ -735,7 +735,7 @@ class IDAnnotationTab(BaseTab):
         # ID column checkbox selection panel
         self.available_id_columns = [
             'HMDB_ID', 'PubChem_CID', 'KEGG_ID', 'LipidMaps_ID',
-            'ChEBI_ID', 'CAS', 'SMILES', 'InChI', 'InChIKey'
+            'ChEBI_ID', 'CAS', 'InChI', 'InChIKey'
         ]
 
         # Get preference selections
@@ -768,7 +768,6 @@ class IDAnnotationTab(BaseTab):
                 'LipidMaps_ID': 'LipidMaps Structural Database ID',
                 'ChEBI_ID': 'ChEBI (Chemical Entities of Biological Interest) ID',
                 'CAS': 'CAS Registry Number',
-                'SMILES': 'SMILES structural string',
                 'InChI': 'IUPAC International Chemical Identifier',
                 'InChIKey': 'Hashed (27-char) InChIKey'
             }
@@ -844,6 +843,35 @@ class IDAnnotationTab(BaseTab):
         def _sync_ms2_choice(event=None):
             self.id_ms2_filter_var.set(self._id_ms2_display_to_code.get(ms2_combo.get(), 'none'))
         ms2_combo.bind('<<ComboboxSelected>>', _sync_ms2_choice)
+
+        # Confidence filter
+        confidence_filter_frame = tk.Frame(posneg_frame, bg='#f0f0f0')
+        confidence_filter_frame.pack(fill='x', padx=8, pady=(2, 2))
+        tk.Label(confidence_filter_frame, text="Confidence Filter:", bg='#f0f0f0', font=('Arial', 8)).pack(side='left')
+        self.id_confidence_filter_var = tk.StringVar(value='exclude_low')
+        confidence_options_display = [
+            'Exclude low confidence (default)',
+            'No confidence filter'
+        ]
+        self._id_conf_display_to_code = {
+            'Exclude low confidence (default)': 'exclude_low',
+            'No confidence filter': 'none'
+        }
+        conf_combo = ttk.Combobox(confidence_filter_frame, values=confidence_options_display, state='readonly', width=38)
+        pref_conf = self._loaded_prefs.get('confidence_filter', 'exclude_low')
+        conf_reverse_map = {v: k for k, v in self._id_conf_display_to_code.items()}
+        if pref_conf in conf_reverse_map:
+            conf_combo.set(conf_reverse_map[pref_conf])
+            self.id_confidence_filter_var.set(pref_conf)
+        else:
+            conf_combo.set(confidence_options_display[0])
+            self.id_confidence_filter_var.set('exclude_low')
+        conf_combo.pack(side='left', padx=5, fill='x', expand=True)
+        self._create_tooltip(conf_combo, "Filter rows by Metabograph_Confidence. Default removes low-confidence rows.")
+
+        def _sync_conf_choice(event=None):
+            self.id_confidence_filter_var.set(self._id_conf_display_to_code.get(conf_combo.get(), 'exclude_low'))
+        conf_combo.bind('<<ComboboxSelected>>', _sync_conf_choice)
 
         # ID-stage deduplication RT window (minutes)
         rtwin_frame = tk.Frame(posneg_frame, bg='#f0f0f0')
@@ -1130,31 +1158,8 @@ class IDAnnotationTab(BaseTab):
             # Custom ID Search mode - load first available sheet
             self.id_progress_text.insert(tk.END, f"\n🔍 Opening column assignment dialog for Custom ID Search mode...\n")
             self.id_progress_text.see(tk.END)
-            
-            xl = pd.ExcelFile(input_file)
-            if len(xl.sheet_names) == 0:
-                messagebox.showerror("Error", "No sheets found in the Excel file")
-                return
-            
-            # If multiple sheets, let user select which one via the dialog
-            if len(xl.sheet_names) > 1:
-                sheet_to_load = xl.sheet_names[0]  # Default to first, dialog will let user choose
-                df = pd.read_excel(input_file, sheet_name=sheet_to_load)
-                self.id_progress_text.insert(tk.END, f"   Available sheets: {', '.join(xl.sheet_names)}\n")
-            else:
-                sheet_to_load = xl.sheet_names[0]
-                df = pd.read_excel(input_file, sheet_name=sheet_to_load)
-            
-            self.id_progress_text.insert(tk.END, f"   Sheet: {sheet_to_load}\n")
-            
-            # Pass excel_file_path for multi-sheet support
-            result = show_column_assignment_dialog(
-                parent=self.root,
-                df=df,
-                tab_type='id_annotation',
-                auto_calculate=False,
-                excel_file_path=input_file,  # Enable multi-sheet selector
-            )
+
+            result = self._prompt_id_annotation_column_assignment(input_file, store_as_custom=True)
             
             if result:
                 # Store column assignments and dataframe for use in annotation
@@ -1418,6 +1423,7 @@ class IDAnnotationTab(BaseTab):
         selected_id_cols = [c for c, v in self.id_filter_vars.items() if v.get()]
         skip_id_filtering = getattr(self, 'skip_id_filtering_var', tk.BooleanVar(value=False)).get()
         ms2_filter_mode = self.id_ms2_filter_var.get()
+        confidence_filter_mode = getattr(self, 'id_confidence_filter_var', tk.StringVar(value='exclude_low')).get()
         require_endogenous = self.require_endogenous_yes.get()
         
         # Update status
@@ -1431,6 +1437,7 @@ class IDAnnotationTab(BaseTab):
         else:
             self.id_progress_text.insert(tk.END, f"Selected ID columns: {', '.join(selected_id_cols) if selected_id_cols else 'None (no ID filtering)'}\n")
         self.id_progress_text.insert(tk.END, f"MS2 filter: {ms2_filter_mode}\n")
+        self.id_progress_text.insert(tk.END, f"Confidence filter: {confidence_filter_mode}\n")
         self.id_progress_text.insert(tk.END, f"Require Endogenous_Source=Yes: {require_endogenous}\n")
         self.id_progress_text.insert(tk.END, f"\nLoading existing annotation file...\n")
         self.id_progress_text.see(tk.END)
@@ -1459,6 +1466,7 @@ class IDAnnotationTab(BaseTab):
                 # Reflect intended bypass in the local variables shown to user; backend already enforces
                 selected_id_cols = []
                 ms2_filter_mode = 'none'
+                confidence_filter_mode = 'none'
                 require_endogenous = False
 
             # Import the re-filter function from metabolite_ID_annotator
@@ -1471,6 +1479,7 @@ class IDAnnotationTab(BaseTab):
                 selected_id_columns=selected_id_cols if not skip_id_filtering else [],
                 skip_id_filtering=skip_id_filtering,
                 ms2_filter_mode=ms2_filter_mode,
+                confidence_filter_mode=confidence_filter_mode,
                 require_endogenous_yes=require_endogenous,
                 progress_callback=lambda msg: self._update_refilter_progress(msg)
             )
@@ -1815,12 +1824,15 @@ class IDAnnotationTab(BaseTab):
                     selected_id_cols = []
                     effective_filter_mode = False
                     id_filter_mode = 'none'
+                    ms2_filter_mode = 'none'
+                    confidence_filter_mode = getattr(self, 'id_confidence_filter_var', tk.StringVar(value='exclude_low')).get()
                     require_endogenous = False
                     
                     print("🔧 Custom mode settings:")
                     print("   - Single sheet ID lookup only")
                     print("   - No Pos/Neg sheet requirement")
                     print("   - No filtering/cleaning/merging")
+                    print(f"   - Confidence filter: {confidence_filter_mode}")
                     print("   - Returns IDs only")
                     
                 except Exception as e:
@@ -1857,6 +1869,8 @@ class IDAnnotationTab(BaseTab):
                 selected_id_cols = getattr(self, '_selected_id_cols_runtime', [])
                 effective_filter_mode = getattr(self, '_effective_id_filter_mode_runtime', False)
                 id_filter_mode = 'any_selected' if effective_filter_mode else 'none'
+                ms2_filter_mode = getattr(self, 'id_ms2_filter_var', tk.StringVar(value='none')).get()
+                confidence_filter_mode = getattr(self, 'id_confidence_filter_var', tk.StringVar(value='exclude_low')).get()
                 require_endogenous = getattr(self, 'require_endogenous_yes', tk.BooleanVar(value=False)).get()
                 
                 # Log filter settings
@@ -1866,6 +1880,8 @@ class IDAnnotationTab(BaseTab):
                     print(f"   Selected ID columns: {', '.join(selected_id_cols)}")
                 else:
                     print(f"   Selected ID columns: None (no filtering)")
+                print(f"   MS2 filter mode: {ms2_filter_mode}")
+                print(f"   Confidence filter mode: {confidence_filter_mode}")
                 print(f"   Require Endogenous=Yes: {require_endogenous}")
 
             print("\n" + "="*80)
@@ -1893,6 +1909,18 @@ class IDAnnotationTab(BaseTab):
             else:
                 print(f"   ❌ neg_df: None")
             print("="*80 + "\n")
+
+            mapped_override_df = getattr(self, '_id_annotation_input_df', None)
+            mapped_override_sheet = str(getattr(self, '_id_annotation_selected_sheet', '') or '').strip().lower()
+            use_override_df = bool(custom_mode) or (mapped_override_sheet == 'combined')
+
+            if not custom_mode and mapped_override_df is not None and not use_override_df:
+                print("ℹ️  Column mapping was done on a polarity sheet; merged output will still be built from the Pos/Neg workflow.")
+                if hasattr(self, 'id_progress_text'):
+                    self.root.after(0, lambda: self.id_progress_text.insert(
+                        tk.END,
+                        "ℹ️ Pos/Neg mappings were captured and will be used in the merged output workflow.\n"
+                    ))
             
             annotator = MetaboliteIDAnnotator(
                 input_file=input_file,
@@ -1904,12 +1932,15 @@ class IDAnnotationTab(BaseTab):
                 skip_kegg=lipid_mode,        # Skip KEGG searches only for lipid mode
                 skip_hmdb=lipid_mode,        # Skip HMDB searches only for lipid mode
                 cleaned_metabolites_df=cleaned_metabolites_df,  # Pass DataFrame from memory
+                input_df_override=(mapped_override_df if use_override_df else None),  # Preserve Combined-first workflow unless Combined/custom override is used
                 metabolite_ids_df=metabolite_ids_df,            # Pass metabolite IDs for merging
                 pos_df=pos_df,                                  # Pass Positive DataFrame
                 neg_df=neg_df,                                  # Pass Negative DataFrame
                 id_filter_mode=id_filter_mode,                  # Pass ID filter mode
                 selected_id_columns=selected_id_cols if not self._skip_id_filtering_runtime else [],  # Pass selected ID columns
                 skip_id_filtering=self._skip_id_filtering_runtime,  # Pass skip ID filtering flag
+                ms2_filter_mode=ms2_filter_mode,                # Pass MS2 filter setting
+                confidence_filter_mode=confidence_filter_mode,  # Pass confidence filter setting
                 require_endogenous_yes=require_endogenous       # Pass endogenous filter setting
             )
             
@@ -2240,8 +2271,94 @@ class IDAnnotationTab(BaseTab):
             if filename:
                 file_var.set(filename)
                 self.root.update_idletasks()
+
+                if file_var is getattr(self, 'id_input_file', None):
+                    self._prompt_id_annotation_column_assignment(filename)
         except Exception as e:
             messagebox.showerror("Browse Error", f"Failed to open file dialog:\n{str(e)}")
+
+    def _prompt_id_annotation_column_assignment(self, input_file, *, store_as_custom=False):
+        """Open the ID annotation column assignment dialog for a selected workbook."""
+        try:
+            if not input_file or not os.path.exists(input_file):
+                return None
+
+            self._id_annotation_column_mapping = None
+            self._id_annotation_input_df = None
+            self._id_annotation_selected_sheet = None
+
+            if store_as_custom:
+                self._custom_id_column_mapping = None
+                self._custom_id_dataframe = None
+                self._custom_id_selected_sheet = None
+
+            xl = pd.ExcelFile(input_file)
+            if len(xl.sheet_names) == 0:
+                messagebox.showerror("Error", "No sheets found in the selected Excel file")
+                return None
+
+            preview_sheet = xl.sheet_names[0]
+            df = pd.read_excel(input_file, sheet_name=preview_sheet)
+
+            self.id_progress_text.insert(tk.END, f"\n🔎 Opening column assignment dialog for: {os.path.basename(input_file)}\n")
+            self.id_progress_text.insert(tk.END, f"   Preview sheet: {preview_sheet}\n")
+            if len(xl.sheet_names) > 1:
+                self.id_progress_text.insert(tk.END, f"   Available sheets: {', '.join(xl.sheet_names)}\n")
+            self.id_progress_text.see(tk.END)
+
+            result = show_column_assignment_dialog(
+                parent=self.root,
+                df=df,
+                tab_type='id_annotation',
+                auto_calculate=False,
+                excel_file_path=input_file,
+            )
+
+            if not result:
+                self.id_progress_text.insert(tk.END, "⚠️ Column assignment was cancelled. The annotation will continue using available column names.\n")
+                self.id_progress_text.see(tk.END)
+                return None
+
+            assignments = result['assignments']
+            assigned_df = result['dataframe']
+            selected_sheet = result.get('selected_sheet')
+            mapped_sheets = result.get('mapped_sheets', [])
+
+            self._id_annotation_column_mapping = assignments
+            self._id_annotation_input_df = assigned_df
+            self._id_annotation_selected_sheet = selected_sheet
+
+            self._custom_id_column_mapping = assignments
+            self._custom_id_dataframe = assigned_df
+            self._custom_id_selected_sheet = selected_sheet
+
+            missing_roles = [
+                role for role in ['MS2', 'MS2 Purity [%]']
+                if not assignments.get(role)
+            ]
+
+            col_info = "\n".join([f"  • {k}: {v}" for k, v in assignments.items() if v])
+            mapped_info = f"\n  • Mapped sheets: {', '.join(mapped_sheets)}" if mapped_sheets else ""
+            sheet_info = f"\n  • Active run sheet: {selected_sheet}" if selected_sheet else ""
+            self.id_progress_text.insert(tk.END, f"✅ Column assignment complete!{mapped_info}{sheet_info}\n{col_info}\n")
+
+            if missing_roles:
+                warning_text = (
+                    "Some optional confidence columns were not assigned:\n"
+                    f"{', '.join(missing_roles)}\n\n"
+                    "Confidence logic that depends on the missing columns will be skipped.\n"
+                    "The analysis will continue with the columns that are available."
+                )
+                messagebox.showwarning("Incomplete Column Assignment", warning_text)
+                self.id_progress_text.insert(tk.END, f"⚠️ Missing assignments: {', '.join(missing_roles)}\n")
+
+            self.id_progress_text.see(tk.END)
+            return result
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open column assignment dialog:\n{str(e)}")
+            logger.error(f"ID annotation column assignment error: {e}", exc_info=True)
+            return None
     
     def browse_output_directory(self):
         """Browse for output directory"""
@@ -2278,10 +2395,11 @@ class IDAnnotationTab(BaseTab):
         default_prefs = {
             'id_selected_columns': [
                 'HMDB_ID', 'PubChem_CID', 'KEGG_ID', 'LipidMaps_ID',
-                'ChEBI_ID', 'CAS', 'SMILES', 'InChI', 'InChIKey'
+                'ChEBI_ID', 'CAS', 'InChI', 'InChIKey'
             ],
             'skip_id_filtering': False,
             'ms2_filter': 'none',
+            'confidence_filter': 'exclude_low',
             'require_endogenous_yes': False,
             'dedup_rt_window_minutes': 2.0
         }
@@ -2307,7 +2425,8 @@ class IDAnnotationTab(BaseTab):
         prefs = {
             'id_selected_columns': [col for col, var in self.id_filter_vars.items() if var.get()],
             'skip_id_filtering': self.skip_id_filtering_var.get() if hasattr(self, 'skip_id_filtering_var') else False,
-            'ms2_filter': self._effective_ms2_filter_mode_runtime if hasattr(self, '_effective_ms2_filter_mode_runtime') else 'none',
+            'ms2_filter': self.id_ms2_filter_var.get() if hasattr(self, 'id_ms2_filter_var') else 'none',
+            'confidence_filter': self.id_confidence_filter_var.get() if hasattr(self, 'id_confidence_filter_var') else 'exclude_low',
             'require_endogenous_yes': self.require_endogenous_yes.get() if hasattr(self, 'require_endogenous_yes') else False,
             'dedup_rt_window_minutes': float(self.dedup_rt_window.get()) if hasattr(self, 'dedup_rt_window') else 2.0
         }

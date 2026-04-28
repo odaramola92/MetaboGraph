@@ -8,6 +8,7 @@ import pandas as pd
 import threading
 import time
 import traceback
+import math
 
 # Import backend and shared components
 from gui.shared.base_tab import BaseTab
@@ -84,6 +85,10 @@ class DataCleaningTab(BaseTab):
         self.lipid_negative_sample_details_file = tk.StringVar()  # File ID for negative mode
         self.lipid_output_file = tk.StringVar(value=os.path.join(os.getcwd(), "cleaned_lipids.xlsx"))
         self.lipid_column_clean_patterns = tk.StringVar(value="Area[, ], [, ], _pos, _neg, .raw, _Area, Area_")
+        self.lipid_grade_threshold = tk.StringVar(value="A,B,C,D")
+        self.lipid_filter_rej = tk.BooleanVar(value=False)
+        self.lipid_grade_remove_rows_mode = tk.BooleanVar(value=False)
+        self.lipid_grade_row_keep_percent = tk.StringVar(value="80")
         
         # Reference ion checkboxes
         self.reference_ion_vars = {}
@@ -932,7 +937,6 @@ class DataCleaningTab(BaseTab):
                 bg='#f0f0f0', wraplength=400, justify='left',
                 font=('Arial', 9)).pack(anchor='w', padx=5, pady=5)
         
-        self.lipid_grade_threshold = tk.StringVar(value="A,B,C")
         tk.Entry(grade_frame, textvariable=self.lipid_grade_threshold,
                 font=('Arial', 9), width=20).pack(anchor='w', padx=5, pady=2)
         
@@ -947,12 +951,61 @@ class DataCleaningTab(BaseTab):
                 fg='#e74c3c', wraplength=400, justify='left').pack(anchor='w', padx=5, pady=(0, 5))
         
         # Rej column filtering option
-        self.lipid_filter_rej = tk.BooleanVar(value=False)
         tk.Checkbutton(grade_frame,
                       text="Filter by Rej column (keep only 'False', remove 'True')",
                       variable=self.lipid_filter_rej,
                       bg='#f0f0f0',
                       font=('Arial', 9)).pack(anchor='w', padx=5, pady=(5, 2))
+
+        tk.Checkbutton(
+            grade_frame,
+            text="Alternative mode: Remove entire row if grade coverage is below threshold",
+            variable=self.lipid_grade_remove_rows_mode,
+            bg='#f0f0f0',
+            font=('Arial', 9, 'bold')
+        ).pack(anchor='w', padx=5, pady=(8, 2))
+
+        pct_frame = tk.Frame(grade_frame, bg='#f0f0f0')
+        pct_frame.pack(anchor='w', padx=5, pady=(0, 2))
+        tk.Label(
+            pct_frame,
+            text="Minimum % of samples per row with acceptable grades:",
+            bg='#f0f0f0',
+            font=('Arial', 9)
+        ).pack(side='left')
+        tk.Entry(
+            pct_frame,
+            textvariable=self.lipid_grade_row_keep_percent,
+            font=('Arial', 9),
+            width=6
+        ).pack(side='left', padx=(6, 0))
+
+        self.lipid_grade_row_hint_label = tk.Label(
+            grade_frame,
+            text="",
+            bg='#f0f0f0',
+            font=('Arial', 8, 'bold'),
+            fg='#2c3e50',
+            wraplength=400,
+            justify='left'
+        )
+        self.lipid_grade_row_hint_label.pack(anchor='w', padx=5, pady=(0, 4))
+
+        tk.Label(
+            grade_frame,
+            text="If enabled: rows are kept only when acceptable grades are present in at least the configured percentage of mapped samples.",
+            bg='#f0f0f0',
+            font=('Arial', 8, 'italic'),
+            fg='#7f8c8d',
+            wraplength=400,
+            justify='left'
+        ).pack(anchor='w', padx=5, pady=(0, 5))
+
+        # Keep hint synchronized with percentage / mode / available verified columns
+        self.lipid_grade_row_keep_percent.trace_add('write', lambda *_: self._update_lipid_grade_row_threshold_hint())
+        self.lipid_grade_threshold.trace_add('write', lambda *_: self._update_lipid_grade_row_threshold_hint())
+        self.lipid_grade_remove_rows_mode.trace_add('write', lambda *_: self._update_lipid_grade_row_threshold_hint())
+        self._update_lipid_grade_row_threshold_hint()
         
       
         # Column Name Cleaning Section (NEW)
@@ -1285,6 +1338,75 @@ class DataCleaningTab(BaseTab):
         """Update file selection interface when lipid mode changes"""
         self.create_lipid_file_selection_widgets()
         self.create_lipid_file_id_widgets()
+        self._update_lipid_grade_row_threshold_hint()
+
+    def _extract_grade_col_count(self, assignments, verified_df=None):
+        """Get Grade column count from assignments (preferred) or dataframe fallback."""
+        if isinstance(assignments, dict):
+            grade_val = assignments.get('Grade')
+            if isinstance(grade_val, list):
+                return len([c for c in grade_val if c])
+            if grade_val:
+                return 1
+        if verified_df is not None and hasattr(verified_df, 'columns'):
+            return len([
+                c for c in verified_df.columns
+                if isinstance(c, str) and c.startswith('Grade[') and c.endswith(']')
+            ])
+        return 0
+
+    def _safe_grade_keep_percentage(self):
+        """Parse and clamp grade keep percentage."""
+        try:
+            pct = float(str(self.lipid_grade_row_keep_percent.get()).replace('%', '').strip())
+        except Exception:
+            pct = 80.0
+        return max(0.0, min(100.0, pct))
+
+    def _update_lipid_grade_row_threshold_hint(self):
+        """Update helper text showing required sample count for row-level grade filtering."""
+        if not hasattr(self, 'lipid_grade_row_hint_label'):
+            return
+
+        pct = self._safe_grade_keep_percentage()
+        mode = self.lipid_cleaning_mode.get() if hasattr(self, 'lipid_cleaning_mode') else 'separate'
+        enabled = self.lipid_grade_remove_rows_mode.get() if hasattr(self, 'lipid_grade_remove_rows_mode') else False
+
+        if mode == 'combined':
+            total = self._extract_grade_col_count(
+                getattr(self, 'lipid_verified_assignments', None),
+                getattr(self, 'lipid_verified_dataframe', None)
+            )
+            if total > 0:
+                required = int(math.ceil((pct / 100.0) * total))
+                msg = f"Row filter threshold: need >= {required}/{total} acceptable grades per row ({pct:.1f}%)."
+            else:
+                msg = f"Row filter threshold: {pct:.1f}% (verify columns to show required count)."
+        else:
+            pos_total = self._extract_grade_col_count(
+                getattr(self, 'lipid_verified_pos_assignments', None),
+                getattr(self, 'lipid_verified_dataframe', None)
+            )
+            neg_total = self._extract_grade_col_count(
+                getattr(self, 'lipid_verified_neg_assignments', None),
+                getattr(self, 'lipid_verified_neg_dataframe', None)
+            )
+            parts = []
+            if pos_total > 0:
+                pos_req = int(math.ceil((pct / 100.0) * pos_total))
+                parts.append(f"Positive: >= {pos_req}/{pos_total}")
+            if neg_total > 0:
+                neg_req = int(math.ceil((pct / 100.0) * neg_total))
+                parts.append(f"Negative: >= {neg_req}/{neg_total}")
+            if parts:
+                msg = f"Row filter threshold ({pct:.1f}%): " + " | ".join(parts)
+            else:
+                msg = f"Row filter threshold: {pct:.1f}% (verify positive/negative columns to show required count)."
+
+        if not enabled:
+            msg = "Alternative row-removal mode is OFF. " + msg
+
+        self.lipid_grade_row_hint_label.config(text=msg)
     
     def browse_lipid_output_file(self):
         """Browse for lipid output file path"""
@@ -1418,6 +1540,8 @@ class DataCleaningTab(BaseTab):
                     'column_clean_patterns': column_clean_patterns if column_clean_patterns else None,
                     'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '',
                     'filter_rej': self.lipid_filter_rej.get() if hasattr(self, 'lipid_filter_rej') else False,
+                    'grade_filter_remove_rows': self.lipid_grade_remove_rows_mode.get() if hasattr(self, 'lipid_grade_remove_rows_mode') else False,
+                    'grade_filter_row_keep_pct': self.lipid_grade_row_keep_percent.get() if hasattr(self, 'lipid_grade_row_keep_percent') else '80',
                     'column_assignments': getattr(self, 'lipid_verified_assignments', {}),
                     'sample_mapping': sample_mapping,
                     'verified_dataframes': {},
@@ -1451,6 +1575,8 @@ class DataCleaningTab(BaseTab):
                     'column_clean_patterns': column_clean_patterns if column_clean_patterns else None,
                     'grade_threshold': self.lipid_grade_threshold.get() if hasattr(self, 'lipid_grade_threshold') else '',
                     'filter_rej': self.lipid_filter_rej.get() if hasattr(self, 'lipid_filter_rej') else False,
+                    'grade_filter_remove_rows': self.lipid_grade_remove_rows_mode.get() if hasattr(self, 'lipid_grade_remove_rows_mode') else False,
+                    'grade_filter_row_keep_pct': self.lipid_grade_row_keep_percent.get() if hasattr(self, 'lipid_grade_row_keep_percent') else '80',
                     'positive_assignments': getattr(self, 'lipid_verified_pos_assignments', {}),
                     'negative_assignments': getattr(self, 'lipid_verified_neg_assignments', {}),
                     'positive_sample_mapping': positive_sample_mapping,  # Separate mapping for positive
@@ -2511,7 +2637,10 @@ class DataCleaningTab(BaseTab):
                             # Rej column (optional but important if user enabled Rej filtering)
                             rej_col = assignments.get('Rej')
                             rej_ok = bool(rej_col and rej_col in df.columns)
-                            lines.append(f"  {'✓' if rej_ok else '✗'} Rej (optional): {rej_col if rej_col else 'Not assigned'}")
+                            if rej_ok:
+                                lines.append(f"  ✓ Rej (optional): {rej_col}")
+                            else:
+                                lines.append("  ℹ Rej (optional): Ignored / Not assigned")
 
                             # Area columns: trust user assignments first, then fall back to detected sample_cols
                             assigned_area = assignments.get('Area')
@@ -2560,7 +2689,8 @@ class DataCleaningTab(BaseTab):
                             self.lipid_progress_text.config(state='disabled'),
                             self.lipid_progress_text.see('end'),
                             self.lipid_process_status.config(text="✅ Column verification complete"),
-                            self.lipid_start_button.config(state='normal')  # ENABLE start button
+                            self.lipid_start_button.config(state='normal'),  # ENABLE start button
+                            self._update_lipid_grade_row_threshold_hint()
                         ))
                 else:  # separate mode
                     pos_file = self.lipid_positive_file.get()
@@ -2673,7 +2803,10 @@ class DataCleaningTab(BaseTab):
                         # Rej column (optional but important if user enabled Rej filtering)
                         rej_col = assignments.get('Rej')
                         rej_ok = bool(rej_col and rej_col in df.columns)
-                        lines.append(f"  {'✓' if rej_ok else '✗'} Rej (optional): {rej_col if rej_col else 'Not assigned'}")
+                        if rej_ok:
+                            lines.append(f"  ✓ Rej (optional): {rej_col}")
+                        else:
+                            lines.append("  ℹ Rej (optional): Ignored / Not assigned")
 
                         # Area columns
                         area_ok = isinstance(sample_cols, list) and len(sample_cols) > 0
@@ -2704,7 +2837,8 @@ class DataCleaningTab(BaseTab):
                         self.lipid_progress_text.config(state='disabled'),
                         self.lipid_progress_text.see('end'),
                         self.lipid_process_status.config(text="✅ Column verification complete"),
-                        self.lipid_start_button.config(state='normal')  # ENABLE start button
+                        self.lipid_start_button.config(state='normal'),  # ENABLE start button
+                        self._update_lipid_grade_row_threshold_hint()
                     ))
                     
             except Exception as e:

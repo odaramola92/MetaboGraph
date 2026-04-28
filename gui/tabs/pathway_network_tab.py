@@ -81,6 +81,11 @@ class PathwayNetworkTab(BaseTab):
         self.feature_col: str = 'Name'
         self.pvalue_col: str = 'pvalue'
         self.log2fc_col: str = 'log2FC'
+        self._last_multiomics_source_info = {
+            'source_col': None,
+            'n_metabolites_with_source': 0,
+            'unique_sources': [],
+        }
         
         # Remember last browsed directory
         self._last_browse_dir = None
@@ -94,6 +99,36 @@ class PathwayNetworkTab(BaseTab):
         self.disease_rank_mode = tk.StringVar(value='Default')
         self.pathway_organism_var = tk.StringVar(value='Homo sapiens')
         self.pathway_font_size_scale = tk.DoubleVar(value=1.0)
+        self.chord_keep_metabolite_case = tk.BooleanVar(value=False)
+        
+        # Network visualization parameters (stored as instance variables)
+        self.network_metabolite_font_size = tk.IntVar(value=10)
+        self.network_pathway_font_size = tk.IntVar(value=9)
+        self.network_enzyme_font_size = tk.IntVar(value=8)
+        self.network_metabolite_max_chars = tk.IntVar(value=10)
+        self.network_metabolite_max_lines = tk.IntVar(value=3)
+        self.network_pathway_max_chars = tk.IntVar(value=20)
+        self.network_pathway_max_lines = tk.IntVar(value=3)
+        self.bargraph_pathway_max_chars = tk.IntVar(value=40)
+        self.bargraph_pathway_max_lines = tk.IntVar(value=3)
+        self.bargraph_title_font_size = tk.IntVar(value=22)
+        self.bargraph_axis_title_font_size = tk.IntVar(value=20)
+        self.bargraph_tick_font_size = tk.IntVar(value=15)
+        self.bargraph_pathway_label_font_size = tk.IntVar(value=20)
+        self.bargraph_width_px = tk.IntVar(value=1200)
+        self.bargraph_height_px = tk.IntVar(value=700)
+        self.bargraph_legend_title_font_size = tk.IntVar(value=14)
+        self.bargraph_legend_tick_font_size = tk.IntVar(value=12)
+        self.bargraph_legend_thickness = tk.IntVar(value=10)
+        self.bargraph_legend_length_percent = tk.IntVar(value=70)
+        self.chord_metabolite_max_chars = tk.IntVar(value=40)
+        self.chord_metabolite_max_lines = tk.IntVar(value=3)
+        self.chord_pathway_max_chars = tk.IntVar(value=40)
+        self.chord_pathway_max_lines = tk.IntVar(value=3)
+        self.chord_metabolite_font_size = tk.IntVar(value=12)
+        self.chord_pathway_font_size = tk.IntVar(value=12)
+        self.chord_figure_width_inches = tk.IntVar(value=12)
+        self.chord_figure_height_inches = tk.IntVar(value=12)
         
         # Create UI
         self.setup_ui()
@@ -123,6 +158,9 @@ class PathwayNetworkTab(BaseTab):
             # Load data if not provided
             if df is None:
                 df = pd.read_excel(file_path)
+
+            # Strict source normalization: only an exact canonical 'Source' column is accepted.
+            # No aliases or partial matches are promoted here.
             
             # Clear any previous enrichment data to force recalculation with new file
             self.pathway_filtered_pathways_data = None
@@ -342,6 +380,13 @@ class PathwayNetworkTab(BaseTab):
                         self.root.after(0, lambda: self._log_network(f"\n⚠️ Removing duplicate columns: {duplicate_cols}\n"))
                         df_renamed = df_renamed.loc[:, ~df_renamed.columns.duplicated(keep='last')]
                         self.root.after(0, lambda: self._log_network(f"✓ Duplicates removed, {len(df_renamed.columns)} columns remain\n\n"))
+
+                    # Preserve only an exact canonical 'Source' column if it already exists.
+                    if 'Source' not in df_renamed.columns and 'Source' in df.columns and len(df) == len(df_renamed):
+                        try:
+                            df_renamed['Source'] = df['Source'].values
+                        except Exception:
+                            pass
                     
                     # ═══════════════════════════════════════════════════════════════
                     # WORKFLOW BRANCH LOGIC
@@ -493,8 +538,12 @@ class PathwayNetworkTab(BaseTab):
                                         continue  # Nothing left to aggregate
 
                                     agg_row = block.iloc[0].copy()
-                                    # Add 's' suffix to class names to avoid collision with individual metabolites
-                                    class_display_name = f"{class_name}s"
+                                    # Preserve original class names unless they collide with a member metabolite name.
+                                    # Use an explicit marker instead of pluralization to keep names semantically correct.
+                                    class_display_name = str(class_name).strip()
+                                    member_name_set = {str(m).strip().lower() for m in member_names if str(m).strip()}
+                                    if class_display_name.lower() in member_name_set:
+                                        class_display_name = f"{class_display_name} (class)"
                                     agg_row['Name'] = class_display_name
                                     agg_row['Class_name'] = class_display_name
                                     agg_row['Class_members'] = '|'.join(member_names)
@@ -534,7 +583,7 @@ class PathwayNetworkTab(BaseTab):
 
                                     for member_name in member_names:
                                         mapping_rows.append({
-                                            'Class': class_display_name,  # Use display name with 's' suffix
+                                            'Class': class_display_name,
                                             'Member': member_name,
                                             'Member_Count': len(member_names)
                                         })
@@ -563,7 +612,7 @@ class PathwayNetworkTab(BaseTab):
                                     for class_name, reasons in preserved_details:
                                         for member, paths in reasons.items():
                                             preview = ', '.join(paths[:5]) if paths else 'unique signal'
-                                            # Show original class name (without 's' suffix) in logs for clarity
+                                            # Show original class name in logs for clarity
                                             self._log_network(f"   • {member} (class {class_name}) → {preview}\n")
                                     self._log_network("\n")
                             else:
@@ -1386,20 +1435,47 @@ class PathwayNetworkTab(BaseTab):
         filtered table is empty. If no usable 'Source' information is
         found, returns an empty dict and has no effect on ranking.
         """
+        def _find_source_column(frame: Optional[pd.DataFrame]) -> Optional[str]:
+            """Return best matching source column name from a dataframe."""
+            if frame is None or frame.empty:
+                return None
+            cols = list(getattr(frame, 'columns', []))
+            if not cols:
+                return None
+
+            # Strict mode: only the exact canonical name is accepted.
+            if 'Source' in cols:
+                return 'Source'
+
+            return None
+
         try:
             if df is None:
                 df = getattr(self, 'pathway_filtered_metabolites_data', None)
         except Exception:
             df = None
 
-        # If filtered data is unavailable or has no Source column,
-        # fall back to the original metabolites (still requiring Source).
-        if df is None or df.empty or 'Source' not in getattr(df, 'columns', []):
+        source_col = _find_source_column(df)
+
+        if source_col is not None:
+            try:
+                logger.info(
+                    f"[MULTIOMICS] Source column detected: {source_col} | "
+                    f"rows={len(df) if df is not None else 0} | "
+                    f"columns={len(df.columns) if df is not None else 0}"
+                )
+            except Exception:
+                pass
+
+        # If filtered data is unavailable or has no usable source column,
+        # fall back to the original metabolites.
+        if df is None or df.empty or source_col is None:
             try:
                 orig_df = getattr(self, 'pathway_original_metabolites_data', None)
             except Exception:
                 orig_df = None
-            if orig_df is None or orig_df.empty or 'Source' not in orig_df.columns:
+            source_col = _find_source_column(orig_df)
+            if orig_df is None or orig_df.empty or source_col is None:
                 logger.info("[MULTIOMICS] No usable 'Source' column found in metabolites data; multi-omics rank disabled.")
                 return {}
             df = orig_df
@@ -1412,11 +1488,14 @@ class PathwayNetworkTab(BaseTab):
             return metabolite_sources
 
         for _, row in df.iterrows():
-            name = self._get_metabolite_value(row, 'name', None)
+            # Prefer canonical Name to avoid mismatches from stale/manual assignments.
+            name = row.get('Name', None) if 'Name' in row.index else None
+            if name is None or (isinstance(name, float) and pd.isna(name)):
+                name = self._get_metabolite_value(row, 'name', None)
             if name is None or (isinstance(name, float) and pd.isna(name)):
                 continue
 
-            src_val = row.get('Source', None)
+            src_val = row.get(source_col, None)
             if src_val is None or pd.isna(src_val):
                 continue
 
@@ -1437,8 +1516,18 @@ class PathwayNetworkTab(BaseTab):
         # DEBUG: log basic stats so users can verify multi-omics info
         try:
             unique_sources = sorted({s for v in metabolite_sources.values() for s in v})
+            self._last_multiomics_source_info = {
+                'source_col': source_col,
+                'n_metabolites_with_source': len(metabolite_sources),
+                'unique_sources': unique_sources,
+            }
             logger.info(f"[MULTIOMICS] Metabolites with Source info: {len(metabolite_sources)}")
             logger.info(f"[MULTIOMICS] Unique sources detected: {unique_sources}")
+            if metabolite_sources:
+                preview = []
+                for met_name in list(metabolite_sources.keys())[:5]:
+                    preview.append(f"{met_name}={sorted(metabolite_sources[met_name])}")
+                logger.info(f"[MULTIOMICS] Source preview: {preview}")
         except Exception:
             pass
 
@@ -1464,7 +1553,18 @@ class PathwayNetworkTab(BaseTab):
             debug: Enable detailed logging
         """
         if not metabolites or not metabolite_sources:
+            if debug and entity_name:
+                logger.info(
+                    f"[MULTIOMICS DEBUG] {entity_name}: skipped before scoring because "
+                    f"metabolites_present={bool(metabolites)} metabolite_sources_present={bool(metabolite_sources)}"
+                )
             return 0.0, 0, 0
+
+        if debug and entity_name:
+            logger.info(
+                f"[MULTIOMICS DEBUG] {entity_name}: starting score calculation with "
+                f"{len(metabolites)} metabolites and {len(metabolite_sources)} metabolite-source mappings"
+            )
 
         source_counts = {}
         contributing_metabolites = {}  # Track which metabolites contribute to each source
@@ -1481,6 +1581,11 @@ class PathwayNetworkTab(BaseTab):
 
         n_sources = len(source_counts)
         total_hits = sum(source_counts.values())
+
+        if debug and entity_name:
+            logger.info(
+                f"[MULTIOMICS DEBUG] {entity_name}: source_counts={source_counts}, total_hits={total_hits}, n_sources={n_sources}"
+            )
         
         # DEBUG: Log detailed breakdown for entities with multi-omics support
         if debug and n_sources > 1 and entity_name:
@@ -1492,10 +1597,21 @@ class PathwayNetworkTab(BaseTab):
                 logger.info(f"   • {src}: {count} metabolites - {mets[:3]}{'...' if len(mets) > 3 else ''}")
         
         if n_sources <= 1 or total_hits == 0:
+            if debug and entity_name:
+                logger.info(
+                    f"[MULTIOMICS DEBUG] {entity_name}: no multi-omics score because "
+                    f"n_sources={n_sources} total_hits={total_hits}"
+                )
             return 0.0, n_sources, total_hits
 
         min_count = min(source_counts.values())
         score = float(min_count) + 0.001 * float(total_hits)
+
+        if debug and entity_name:
+            logger.info(
+                f"[MULTIOMICS DEBUG] {entity_name}: score computed as min_count={min_count} + "
+                f"0.001*total_hits={total_hits} => {score:.3f}"
+            )
         return score, n_sources, total_hits
 
     def _normalize_pathway_key(self, pathway_name: str) -> str:
@@ -1896,7 +2012,20 @@ class PathwayNetworkTab(BaseTab):
 
             # CRITICAL: Compute multi-omics scores ONLY for displayed pathways (after disease/general filtering)
             # This ensures multi-omics ranks are relative to the actual displayed set
+            logger.info(
+                f"[MULTIOMICS] About to score displayed pathways: {len(items)} visible pathways, "
+                f"{len(self.pathway_to_metabolites) if hasattr(self, 'pathway_to_metabolites') else 0} pathways with metabolite mappings"
+            )
             metabolite_sources = self._compute_metabolite_sources()
+            try:
+                info = getattr(self, '_last_multiomics_source_info', {}) or {}
+                logger.info(
+                    f"[MULTIOMICS] Source summary before scoring: source_col={info.get('source_col')} | "
+                    f"n_metabolites_with_source={info.get('n_metabolites_with_source', 0)} | "
+                    f"unique_sources={info.get('unique_sources', [])}"
+                )
+            except Exception:
+                pass
             pathway_multiomics = {}
             if metabolite_sources and hasattr(self, 'pathway_to_metabolites'):
                 # Only compute for pathways in items (displayed pathways)
@@ -1906,6 +2035,10 @@ class PathwayNetworkTab(BaseTab):
                         mets = self.pathway_to_metabolites[p_name]
                         # Enable debug for top 10 pathways to track multi-omics breakdown
                         debug_enabled = (idx < 10)
+                        if debug_enabled:
+                            logger.info(
+                                f"[MULTIOMICS] Scoring pathway '{p_name}' with {len(mets)} mapped metabolites"
+                            )
                         score, n_sources, total_hits = self._compute_multiomics_score(
                             mets, metabolite_sources, entity_name=p_name, debug=debug_enabled
                         )
@@ -1920,6 +2053,7 @@ class PathwayNetworkTab(BaseTab):
                 mo_info = pathway_multiomics.get(it['name'], {})
                 it['mo_score'] = float(mo_info.get('score', 0.0) or 0.0)
                 it['n_sources'] = int(mo_info.get('n_sources', 0) or 0)
+                it['mo_total_hits'] = int(mo_info.get('total_hits', 0) or 0)
 
             # Compute ranks for consensus (rank by |z| desc and ML desc)
             # Handle ties by stable ordering; missing values already coerced to 0
@@ -1948,7 +2082,10 @@ class PathwayNetworkTab(BaseTab):
                     logger.info("[MULTIOMICS] Top pathways by multi-omics score:")
                     for it in top_preview:
                         if it['mo_score'] > 0:
-                            logger.info(f"   {it['name']}: score={it['mo_score']:.3f}, sources={it['n_sources']}, hits={it['n']}")
+                            logger.info(
+                                f"   {it['name']}: score={it['mo_score']:.3f}, sources={it['n_sources']}, "
+                                f"hits={it['n']}, total_source_hits={it.get('mo_total_hits', 0)}"
+                            )
             except Exception:
                 pass
 
@@ -2056,6 +2193,7 @@ class PathwayNetworkTab(BaseTab):
             ml_filtered = 0
             pvalue_filtered = 0
             pathway_count = 0
+            displayed_items = []
             for it in items_sorted:
                 # FIRST: Apply p-value threshold filter (ALWAYS applied)
                 if it['p'] > pvalue_threshold:
@@ -2104,6 +2242,7 @@ class PathwayNetworkTab(BaseTab):
                     f"{it['btw']:.4f}",
                     consensus
                 ))
+                displayed_items.append(it)
                 pathway_count += 1
             
             if pvalue_filtered > 0:
@@ -2138,6 +2277,54 @@ class PathwayNetworkTab(BaseTab):
                 self._log_network(f"   • Activated: {displayed_activated}\n")
                 self._log_network(f"   • Inhibited: {displayed_inhibited}\n")
                 self._log_network(f"   • No change: {displayed_no_change}\n")
+
+                # Multi-omics transparency summary (based on pathways currently shown in the table)
+                shown_count = len(displayed_items)
+                shown_multi_source = sum(1 for it in displayed_items if int(it.get('n_sources', 0) or 0) > 1)
+                shown_positive_mo = sum(1 for it in displayed_items if float(it.get('mo_score', 0.0) or 0.0) > 0.0)
+                single_source_failures = [
+                    it for it in displayed_items
+                    if int(it.get('n_sources', 0) or 0) == 1 and float(it.get('mo_score', 0.0) or 0.0) <= 0.0
+                ]
+                single_source_failures = sorted(
+                    single_source_failures,
+                    key=lambda x: (x.get('p', 1.0), -int(x.get('n', 0) or 0), str(x.get('name', '')))
+                )
+
+                self._log_network(f"\n🔎 MULTI-OMICS TRANSPARENCY\n")
+                self._log_network(f"   • pathways shown: {shown_count}\n")
+                self._log_network(f"   • pathways with >1 sources: {shown_multi_source}\n")
+                self._log_network(f"   • pathways with positive mo_score: {shown_positive_mo}\n")
+
+                if single_source_failures:
+                    self._log_network("   • top pathways that failed multi-omics due to single-source only:\n")
+                    for it in single_source_failures[:10]:
+                        self._log_network(
+                            f"      - {it.get('name', '')} | n_sources=1, mo_score={float(it.get('mo_score', 0.0) or 0.0):.3f}, "
+                            f"#compounds={int(it.get('n', 0) or 0)}, p={float(it.get('p', 1.0) or 1.0):.2e}\n"
+                        )
+                else:
+                    self._log_network("   • top pathways that failed multi-omics due to single-source only: none\n")
+
+                # Compact run fingerprint for side-by-side reproducibility checks.
+                try:
+                    src_info = getattr(self, '_last_multiomics_source_info', {}) or {}
+                    source_col_used = src_info.get('source_col') or 'None'
+                    unique_sources = src_info.get('unique_sources', []) or []
+                    n_sources_labels = len(unique_sources)
+                    source_labels_preview = ', '.join([str(s) for s in unique_sources[:6]])
+                    if len(unique_sources) > 6:
+                        source_labels_preview += ', ...'
+
+                    self._log_network("\n🧾 RUN FINGERPRINT\n")
+                    self._log_network(
+                        f"   source_col={source_col_used} | source_labels={n_sources_labels} [{source_labels_preview}] | "
+                        f"pathway_p={pvalue_threshold} | max_pathways={max_pathways if limit_enabled else 'unlimited'} | "
+                        f"shown={shown_count} | gt1_sources={shown_multi_source} | mo_positive={shown_positive_mo}\n"
+                    )
+                except Exception:
+                    pass
+
                 self._log_network(f"{'='*70}\n\n")
             except Exception:
                 pass
@@ -3379,6 +3566,12 @@ class PathwayNetworkTab(BaseTab):
                       variable=self.network_gen_plots,
                       font=('Arial', 8, 'bold'), bg='#ecf0f1', fg='#2c3e50',
                       activebackground='#ecf0f1', selectcolor='#ecf0f1').pack(anchor='w', pady=(4, 0))
+        
+        # Generate Statistics Plots button
+        tk.Button(output_opts, text="⚙️ Generate Statistics Plots",
+                 command=self.open_visualization_settings,
+                 bg='#3498db', fg='white', font=('Arial', 8, 'bold'),
+                 padx=8, pady=4, cursor='hand2').pack(anchor='w', padx=(20, 0), pady=(3, 0))
         
         # Initialize plot selections (all enabled by default)
         self.network_plot_selections = {
@@ -5407,6 +5600,268 @@ class PathwayNetworkTab(BaseTab):
         self._populate_metabolite_tree()
         self._log_network("✅ Disease filters reset (Min=1, ML=0, Consensus=999999)\n")
     
+    def open_visualization_settings(self):
+        """Open a window to configure network visualization parameters"""
+        # Create new window
+        settings_window = tk.Toplevel(self.root)
+        settings_window.title("Network Visualization Settings")
+        settings_window.geometry("500x650")
+        settings_window.resizable(True, True)
+        settings_window.grab_set()
+        
+        # Create main frame with scrollbar
+        canvas = tk.Canvas(settings_window, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(settings_window, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg='white')
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Title
+        title_label = tk.Label(scrollable_frame, text="Network Visualization Settings", 
+                              font=('Arial', 12, 'bold'), bg='white', fg='#2c3e50')
+        title_label.pack(pady=(10, 20), padx=10, fill='x')
+        
+        # Create parameter controls
+        params = [
+            ("Metabolite Font Size", self.network_metabolite_font_size, 6, 24),
+            ("Pathway Font Size", self.network_pathway_font_size, 6, 24),
+            ("Enzyme/Transporter Font Size", self.network_enzyme_font_size, 6, 24),
+            ("Metabolite Max Characters/Line", self.network_metabolite_max_chars, 5, 30),
+            ("Metabolite Max Lines", self.network_metabolite_max_lines, 1, 5),
+            ("Pathway Max Characters/Line", self.network_pathway_max_chars, 8, 50),
+            ("Pathway Max Lines", self.network_pathway_max_lines, 1, 8),
+        ]
+        
+        controls = {}
+        trace_bindings = []
+
+        def make_update_func(current_lbl, variable):
+            def update_display(*args):
+                try:
+                    if current_lbl.winfo_exists():
+                        current_lbl.config(text=f"(Current: {variable.get()})")
+                except tk.TclError:
+                    # Widget was destroyed; callback will be removed on close.
+                    pass
+            return update_display
+
+        def _bind_trace(variable, callback):
+            trace_id = variable.trace_add('write', callback)
+            trace_bindings.append((variable, trace_id))
+        
+        for label_text, var, min_val, max_val in params:
+            # Create parameter frame
+            param_frame = tk.Frame(scrollable_frame, bg='#ecf0f1', relief='flat', padx=10, pady=8)
+            param_frame.pack(fill='x', padx=10, pady=(0, 5))
+            
+            # Label
+            label = tk.Label(param_frame, text=label_text, font=('Arial', 9), bg='#ecf0f1', fg='#2c3e50')
+            label.pack(anchor='w', pady=(0, 3))
+            
+            # Value frame (spinbox + current value display)
+            value_frame = tk.Frame(param_frame, bg='#ecf0f1')
+            value_frame.pack(fill='x')
+            
+            spinbox = tk.Spinbox(value_frame, from_=min_val, to=max_val, textvariable=var,
+                                font=('Arial', 10), width=8, bg='white', fg='#2c3e50')
+            spinbox.pack(side='left', padx=(0, 10))
+            
+            # Current value display
+            current_label = tk.Label(value_frame, text=f"(Current: {var.get()})", 
+                                    font=('Arial', 8), bg='#ecf0f1', fg='#7f8c8d')
+            current_label.pack(side='left')
+            
+            _bind_trace(var, make_update_func(current_label, var))
+            controls[label_text] = (spinbox, var)
+
+        bargraph_frame = tk.LabelFrame(
+            scrollable_frame,
+            text="Bar Graph Label Settings (Top 20 & Selected)",
+            font=('Arial', 9, 'bold'),
+            bg='white',
+            fg='#2c3e50'
+        )
+        bargraph_frame.pack(fill='x', padx=10, pady=(10, 5))
+
+        for label_text, var, min_val, max_val in [
+            ("Title Font Size", self.bargraph_title_font_size, 10, 40),
+            ("Axis Title Font Size", self.bargraph_axis_title_font_size, 8, 36),
+            ("X-Axis Tick Label Font Size", self.bargraph_tick_font_size, 6, 30),
+            ("Pathway Label Font Size", self.bargraph_pathway_label_font_size, 6, 30),
+            ("Plot Width (px)", self.bargraph_width_px, 900, 4000),
+            ("Plot Height (px)", self.bargraph_height_px, 500, 4000),
+            ("Legend Title Font Size", self.bargraph_legend_title_font_size, 8, 36),
+            ("Legend Tick Font Size", self.bargraph_legend_tick_font_size, 6, 30),
+            ("Legend Thickness", self.bargraph_legend_thickness, 6, 40),
+            ("Legend Length (%)", self.bargraph_legend_length_percent, 30, 100),
+            ("Pathway Max Characters/Line", self.bargraph_pathway_max_chars, 8, 50),
+            ("Pathway Max Lines", self.bargraph_pathway_max_lines, 1, 8),
+        ]:
+            param_frame = tk.Frame(bargraph_frame, bg='#ecf0f1', relief='flat', padx=10, pady=8)
+            param_frame.pack(fill='x', padx=10, pady=(0, 5))
+            tk.Label(param_frame, text=label_text, font=('Arial', 9), bg='#ecf0f1', fg='#2c3e50').pack(anchor='w', pady=(0, 3))
+            value_frame = tk.Frame(param_frame, bg='#ecf0f1')
+            value_frame.pack(fill='x')
+            spinbox = tk.Spinbox(value_frame, from_=min_val, to=max_val, textvariable=var,
+                                font=('Arial', 10), width=8, bg='white', fg='#2c3e50')
+            spinbox.pack(side='left', padx=(0, 10))
+            current_label = tk.Label(value_frame, text=f"(Current: {var.get()})", font=('Arial', 8), bg='#ecf0f1', fg='#7f8c8d')
+            current_label.pack(side='left')
+            _bind_trace(var, make_update_func(current_label, var))
+
+        chord_frame = tk.LabelFrame(
+            scrollable_frame,
+            text="Chord Diagram Label Settings",
+            font=('Arial', 9, 'bold'),
+            bg='white',
+            fg='#2c3e50'
+        )
+        chord_frame.pack(fill='x', padx=10, pady=(10, 5))
+
+        for label_text, var, min_val, max_val in [
+            ("Metabolite Label Font Size", self.chord_metabolite_font_size, 6, 30),
+            ("Pathway Label Font Size", self.chord_pathway_font_size, 6, 30),
+            ("Metabolite Max Characters/Line", self.chord_metabolite_max_chars, 5, 30),
+            ("Metabolite Max Lines", self.chord_metabolite_max_lines, 1, 5),
+            ("Pathway Max Characters/Line", self.chord_pathway_max_chars, 8, 50),
+            ("Pathway Max Lines", self.chord_pathway_max_lines, 1, 8),
+            ("Chord Figure Width (inches)", self.chord_figure_width_inches, 8, 30),
+            ("Chord Figure Height (inches)", self.chord_figure_height_inches, 8, 30),
+        ]:
+            param_frame = tk.Frame(chord_frame, bg='#ecf0f1', relief='flat', padx=10, pady=8)
+            param_frame.pack(fill='x', padx=10, pady=(0, 5))
+            tk.Label(param_frame, text=label_text, font=('Arial', 9), bg='#ecf0f1', fg='#2c3e50').pack(anchor='w', pady=(0, 3))
+            value_frame = tk.Frame(param_frame, bg='#ecf0f1')
+            value_frame.pack(fill='x')
+            spinbox = tk.Spinbox(value_frame, from_=min_val, to=max_val, textvariable=var,
+                                font=('Arial', 10), width=8, bg='white', fg='#2c3e50')
+            spinbox.pack(side='left', padx=(0, 10))
+            current_label = tk.Label(value_frame, text=f"(Current: {var.get()})", font=('Arial', 8), bg='#ecf0f1', fg='#7f8c8d')
+            current_label.pack(side='left')
+            _bind_trace(var, make_update_func(current_label, var))
+
+        # Chord label casing option
+        chord_case_frame = tk.Frame(chord_frame, bg='#ecf0f1', relief='flat', padx=10, pady=8)
+        chord_case_frame.pack(fill='x', padx=10, pady=(0, 5))
+
+        chord_case_title = tk.Label(
+            chord_case_frame,
+            text="Chord Diagram Label Casing",
+            font=('Arial', 9),
+            bg='#ecf0f1',
+            fg='#2c3e50'
+        )
+        chord_case_title.pack(anchor='w', pady=(0, 3))
+
+        chord_case_cb = tk.Checkbutton(
+            chord_case_frame,
+            text="🔤 Keep metabolite labels as-is",
+            variable=self.chord_keep_metabolite_case,
+            font=('Arial', 9),
+            bg='#ecf0f1',
+            fg='#2c3e50',
+            activebackground='#ecf0f1',
+            selectcolor='#ecf0f1'
+        )
+        chord_case_cb.pack(anchor='w')
+
+        chord_case_note = tk.Label(
+            chord_case_frame,
+            text="Unchecked = convert metabolite labels to sentence case",
+            font=('Arial', 8),
+            bg='#ecf0f1',
+            fg='#7f8c8d'
+        )
+        chord_case_note.pack(anchor='w', pady=(2, 0))
+        
+        # Add separator
+        separator = ttk.Separator(scrollable_frame, orient='horizontal')
+        separator.pack(fill='x', padx=10, pady=15)
+        
+        # Default values info box
+        info_frame = tk.Frame(scrollable_frame, bg='#d5f4e6', relief='flat', padx=10, pady=8)
+        info_frame.pack(fill='x', padx=10, pady=(0, 10))
+        
+        info_text = tk.Label(info_frame, text="Default Values:\n"
+                            "• Metabolite Font: 10  •  Pathway Font: 9  •  Enzyme Font: 8\n"
+                            "• Network labels: Metabolite Chars 10 / Lines 2, Pathway Chars 20 / Lines 3\n"
+                            "• Bar graphs: Title 22, Axis Title 20, X Tick 15, Pathway Label 20, Size 1200x700, Legend 14/12/10/70%, Pathway Chars 40 / Lines 3\n"
+                            "• Chord diagram: Metabolite Font 12, Pathway Font 12, Metabolite Chars 40 / Lines 3, Pathway Chars 40 / Lines 3, Size 12x12 in",
+                            font=('Arial', 8), bg='#d5f4e6', fg='#27ae60', justify='left')
+        info_text.pack(anchor='w')
+        
+        # Buttons frame
+        button_frame = tk.Frame(scrollable_frame, bg='white')
+        button_frame.pack(fill='x', padx=10, pady=(10, 10))
+        
+        def reset_to_defaults():
+            """Reset all parameters to defaults"""
+            self.network_metabolite_font_size.set(10)
+            self.network_pathway_font_size.set(9)
+            self.network_enzyme_font_size.set(8)
+            self.network_metabolite_max_chars.set(10)
+            self.network_metabolite_max_lines.set(2)
+            self.network_pathway_max_chars.set(20)
+            self.network_pathway_max_lines.set(3)
+            self.bargraph_title_font_size.set(22)
+            self.bargraph_axis_title_font_size.set(20)
+            self.bargraph_tick_font_size.set(15)
+            self.bargraph_pathway_label_font_size.set(20)
+            self.bargraph_width_px.set(1200)
+            self.bargraph_height_px.set(700)
+            self.bargraph_legend_title_font_size.set(14)
+            self.bargraph_legend_tick_font_size.set(12)
+            self.bargraph_legend_thickness.set(10)
+            self.bargraph_legend_length_percent.set(70)
+            self.bargraph_pathway_max_chars.set(40)
+            self.bargraph_pathway_max_lines.set(3)
+            self.chord_metabolite_font_size.set(12)
+            self.chord_pathway_font_size.set(12)
+            self.chord_metabolite_max_chars.set(40)
+            self.chord_metabolite_max_lines.set(3)
+            self.chord_pathway_max_chars.set(40)
+            self.chord_pathway_max_lines.set(3)
+            self.chord_figure_width_inches.set(12)
+            self.chord_figure_height_inches.set(12)
+            self.chord_keep_metabolite_case.set(False)
+            messagebox.showinfo("Reset", "All parameters reset to defaults!")
+        
+        def _close_settings_window():
+            for variable, trace_id in trace_bindings:
+                try:
+                    variable.trace_remove('write', trace_id)
+                except Exception:
+                    pass
+            try:
+                if settings_window.winfo_exists():
+                    settings_window.destroy()
+            except Exception:
+                pass
+
+        settings_window.protocol("WM_DELETE_WINDOW", _close_settings_window)
+
+        # Reset button
+        reset_btn = tk.Button(button_frame, text="↺ Reset to Defaults", command=reset_to_defaults,
+                             bg='#95a5a6', fg='white', font=('Arial', 9, 'bold'),
+                             padx=10, pady=5, cursor='hand2')
+        reset_btn.pack(side='left', padx=(0, 5))
+        
+        # Close button
+        close_btn = tk.Button(button_frame, text="✓ Close", command=_close_settings_window,
+                             bg='#27ae60', fg='white', font=('Arial', 9, 'bold'),
+                             padx=10, pady=5, cursor='hand2')
+        close_btn.pack(side='left')
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+    
     def _create_statistics_explanation_file(self, output_path):
         """Create a simple text file explaining all statistics and methods."""
         try:
@@ -6463,7 +6918,32 @@ For questions or issues, refer to the main documentation.
 
                     # Generate plots with SELECTED pathways (for states, significance, selected enrichment)
                     logger.info(f"[PLOT DEBUG] Generating plots with {len(selected_pathways)} SELECTED pathways")
-                    figs_selected = create_pathway_summary_plots(metabolites, selected_pathways, font_size_scale=self.pathway_font_size_scale.get())
+                    figs_selected = create_pathway_summary_plots(
+                        metabolites,
+                        selected_pathways,
+                        font_size_scale=self.pathway_font_size_scale.get(),
+                        bargraph_pathway_max_chars=getattr(self, 'bargraph_pathway_max_chars', tk.IntVar(value=40)).get(),
+                        bargraph_pathway_max_lines=getattr(self, 'bargraph_pathway_max_lines', tk.IntVar(value=3)).get(),
+                        bargraph_title_font_size=getattr(self, 'bargraph_title_font_size', tk.IntVar(value=22)).get(),
+                        bargraph_axis_title_font_size=getattr(self, 'bargraph_axis_title_font_size', tk.IntVar(value=20)).get(),
+                        bargraph_tick_font_size=getattr(self, 'bargraph_tick_font_size', tk.IntVar(value=15)).get(),
+                        bargraph_pathway_label_font_size=getattr(self, 'bargraph_pathway_label_font_size', tk.IntVar(value=20)).get(),
+                        bargraph_width_px=getattr(self, 'bargraph_width_px', tk.IntVar(value=1200)).get(),
+                        bargraph_height_px=getattr(self, 'bargraph_height_px', tk.IntVar(value=700)).get(),
+                        bargraph_legend_title_font_size=getattr(self, 'bargraph_legend_title_font_size', tk.IntVar(value=14)).get(),
+                        bargraph_legend_tick_font_size=getattr(self, 'bargraph_legend_tick_font_size', tk.IntVar(value=12)).get(),
+                        bargraph_legend_thickness=getattr(self, 'bargraph_legend_thickness', tk.IntVar(value=10)).get(),
+                        bargraph_legend_length_percent=getattr(self, 'bargraph_legend_length_percent', tk.IntVar(value=70)).get(),
+                        chord_metabolite_max_chars=getattr(self, 'chord_metabolite_max_chars', tk.IntVar(value=40)).get(),
+                        chord_metabolite_max_lines=getattr(self, 'chord_metabolite_max_lines', tk.IntVar(value=2)).get(),
+                        chord_pathway_max_chars=getattr(self, 'chord_pathway_max_chars', tk.IntVar(value=40)).get(),
+                        chord_pathway_max_lines=getattr(self, 'chord_pathway_max_lines', tk.IntVar(value=2)).get(),
+                        chord_metabolite_font_size=getattr(self, 'chord_metabolite_font_size', tk.IntVar(value=12)).get(),
+                        chord_pathway_font_size=getattr(self, 'chord_pathway_font_size', tk.IntVar(value=12)).get(),
+                        chord_width_inches=getattr(self, 'chord_figure_width_inches', tk.IntVar(value=12)).get(),
+                        chord_height_inches=getattr(self, 'chord_figure_height_inches', tk.IntVar(value=12)).get(),
+                        chord_keep_metabolite_case=getattr(self, 'chord_keep_metabolite_case', tk.BooleanVar(value=False)).get(),
+                    )
                     # figs_selected now includes chord legend as 8th element
                     
                     # Extract plots that should use SELECTED pathways
@@ -6482,7 +6962,32 @@ For questions or issues, refer to the main documentation.
                     fig5 = None  # Pathway Enrichment (Top 20)
                     if len(all_pathways_for_top20) > len(selected_pathways):
                         # Generate plots with ALL pathways only to extract Top 20 enrichment
-                        figs_all = create_pathway_summary_plots(metabolites, all_pathways_for_top20, font_size_scale=self.pathway_font_size_scale.get())
+                        figs_all = create_pathway_summary_plots(
+                            metabolites,
+                            all_pathways_for_top20,
+                            font_size_scale=self.pathway_font_size_scale.get(),
+                            bargraph_pathway_max_chars=getattr(self, 'bargraph_pathway_max_chars', tk.IntVar(value=40)).get(),
+                            bargraph_pathway_max_lines=getattr(self, 'bargraph_pathway_max_lines', tk.IntVar(value=3)).get(),
+                            bargraph_title_font_size=getattr(self, 'bargraph_title_font_size', tk.IntVar(value=22)).get(),
+                            bargraph_axis_title_font_size=getattr(self, 'bargraph_axis_title_font_size', tk.IntVar(value=20)).get(),
+                            bargraph_tick_font_size=getattr(self, 'bargraph_tick_font_size', tk.IntVar(value=15)).get(),
+                            bargraph_pathway_label_font_size=getattr(self, 'bargraph_pathway_label_font_size', tk.IntVar(value=20)).get(),
+                            bargraph_width_px=getattr(self, 'bargraph_width_px', tk.IntVar(value=1200)).get(),
+                            bargraph_height_px=getattr(self, 'bargraph_height_px', tk.IntVar(value=700)).get(),
+                            bargraph_legend_title_font_size=getattr(self, 'bargraph_legend_title_font_size', tk.IntVar(value=14)).get(),
+                            bargraph_legend_tick_font_size=getattr(self, 'bargraph_legend_tick_font_size', tk.IntVar(value=12)).get(),
+                            bargraph_legend_thickness=getattr(self, 'bargraph_legend_thickness', tk.IntVar(value=10)).get(),
+                            bargraph_legend_length_percent=getattr(self, 'bargraph_legend_length_percent', tk.IntVar(value=70)).get(),
+                            chord_metabolite_max_chars=getattr(self, 'chord_metabolite_max_chars', tk.IntVar(value=40)).get(),
+                            chord_metabolite_max_lines=getattr(self, 'chord_metabolite_max_lines', tk.IntVar(value=2)).get(),
+                            chord_pathway_max_chars=getattr(self, 'chord_pathway_max_chars', tk.IntVar(value=40)).get(),
+                            chord_pathway_max_lines=getattr(self, 'chord_pathway_max_lines', tk.IntVar(value=2)).get(),
+                            chord_metabolite_font_size=getattr(self, 'chord_metabolite_font_size', tk.IntVar(value=12)).get(),
+                            chord_pathway_font_size=getattr(self, 'chord_pathway_font_size', tk.IntVar(value=12)).get(),
+                            chord_width_inches=getattr(self, 'chord_figure_width_inches', tk.IntVar(value=12)).get(),
+                            chord_height_inches=getattr(self, 'chord_figure_height_inches', tk.IntVar(value=12)).get(),
+                            chord_keep_metabolite_case=getattr(self, 'chord_keep_metabolite_case', tk.BooleanVar(value=False)).get(),
+                        )
                         # figs_all now includes chord legend as 8th element
                         fig5 = figs_all[4] if len(figs_all) > 4 else None
                         logger.info(f"[PLOT DEBUG] Top 20 enrichment uses {len(all_pathways_for_top20)} pathways")

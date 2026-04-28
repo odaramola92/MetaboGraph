@@ -1245,9 +1245,10 @@ class MultiOmicsAnalysisTab(BaseTab):
                     network_tab = self.network_tab_instance
                     
                     self._log("\n🔄 Loading merged data to Network Analysis tab...")
-                    
-                    # Load data into network tab
-                    network_tab.load_annotated_data(save_path, self.merged_data.copy())
+
+                    # Load from the saved file path (not in-memory DataFrame) so auto-load
+                    # and manual Browse import follow the exact same parsing path/results.
+                    network_tab.load_annotated_data(save_path)
                     
                     self._log("✅ Data loaded to Network Analysis tab!")
                     
