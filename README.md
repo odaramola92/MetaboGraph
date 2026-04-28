@@ -186,34 +186,91 @@ For comprehensive build and deployment instructions, see [INSTALLATION.md](INSTA
 ### Project Structure
 ```
 MetaboGraph/
-├── metabograph.py           # Main entry point
-├── metabograph.spec         # PyInstaller spec file
-├── requirements.txt         # Python dependencies
-├── setup.py                 # Package setup
-├── gui/                     # GUI modules
-│   ├── main.py              # Main application window
-│   ├── shared/              # Shared utilities
-│   │   ├── data_manager.py
-│   │   ├── utils.py
-│   │   └── column_assignment.py
-│   └── tabs/                # Tab implementations
-│       ├── data_cleaning_tab.py
-│       ├── id_annotation_tab.py
-│       ├── pathway_analysis_parent_tab.py
-│       ├── database_setup_tab.py
-│       └── ...
-├── main_script/             # Core analysis modules
-│   ├── metabolite_data_cleaner.py
-│   ├── metabolite_ID_annotator.py
-│   ├── metabolite_pathways_annotator.py
-│   ├── fisher_ora_pathway_analysis.py
-│   ├── database_builder.py
-│   └── ...
-├── Databases/               # Database files (user-provided)
-├── docs/                    # Documentation
-│   ├── user-guides/
-│   └── images/
-└── build/                   # Build artifacts (generated)
+├── 📄 Configuration & Setup
+│   ├── metabograph.py              # Main entry point
+│   ├── metabograph.spec            # PyInstaller spec file
+│   ├── setup.py                    # Package setup
+│   ├── requirements.txt            # Python dependencies
+│   ├── run_metabograph.bat         # Windows batch launcher
+│   └── run_metabograph.sh          # Unix shell launcher
+├── 📋 Documentation & Metadata
+│   ├── README.md                   # This file
+│   ├── LICENSE                     # MIT License
+│   ├── CITATION.cff                # Citation metadata
+│   ├── CONTRIBUTING.md             # Contribution guidelines
+│   ├── INSTALLATION.md             # Installation & build guide
+│   ├── DIAGNOSTICS.md              # Diagnostics & troubleshooting
+│   ├── STARTUP_STATUS.md           # Startup verification report
+│   ├── UNICODE_FIX_COMPLETE.md     # Unicode fix documentation
+│   ├── PRE_PUBLICATION_CHECKLIST.md # Pre-publication tasks
+│   └── id_annotation_prefs.json    # ID annotation preferences
+├── gui/                            # GUI modules
+│   ├── __init__.py
+│   ├── main.py                     # Main application window
+│   ├── shared/                     # Shared utilities
+│   │   ├── __init__.py
+│   │   ├── data_manager.py         # Data management layer
+│   │   ├── base_tab.py             # Base class for all tabs
+│   │   ├── column_assignment.py    # Column mapping interface
+│   │   ├── pairwise_column_mapper.py
+│   │   └── utils.py                # Common utilities
+│   └── tabs/                       # Tab implementations
+│       ├── __init__.py
+│       ├── data_cleaning_tab.py    # Data preprocessing tab
+│       ├── id_annotation_tab.py    # Metabolite ID annotation
+│       ├── pathway_analysis_parent_tab.py  # Pathway analysis parent
+│       ├── pathway_annotation_tab.py       # Pathway annotation
+│       ├── pathway_network_tab.py          # Network visualization
+│       ├── comparative_analysis_tab.py     # Multi-dataset comparison
+│       ├── multiomics_analysis_tab.py      # Multi-omics integration
+│       ├── database_setup_tab.py           # Database management
+│       ├── help_tab.py                     # Help & documentation
+│       └── [obsolete files] pathway_annotation_tab_old.py
+├── main_script/                    # Core analysis modules
+│   ├── metabolite_data_cleaner.py  # Data cleaning engine
+│   ├── metabolite_ID_annotator.py  # ID annotation engine
+│   ├── metabolite_pathways_annotator.py     # Pathway mapping
+│   ├── metabolite_pathway_network.py        # Network construction
+│   ├── fisher_ora_pathway_analysis.py       # Pathway enrichment
+│   ├── database_builder.py         # Database processing
+│   ├── comparative_analysis.py     # Comparative analysis
+│   ├── interactive_network_viewer.py        # Network visualization
+│   ├── lipid_search.py             # Lipid-specific utilities
+│   ├── ml_pathway_models.py        # Machine learning models
+│   ├── calculate_universe.py       # Background universe calculation
+│   ├── factor_mapping_manager.py   # Factor management
+│   ├── generate_license.py         # License generation
+│   ├── runtime_license_hook.py     # License hooks
+│   ├── help.py                     # Help content
+│   ├── run_gui.py                  # GUI launcher
+│   ├── lipid_class_annotation.txt  # Lipid classification reference
+│   └── universe_config.json        # Universe configuration
+├── Databases/                      # Database storage
+│   ├── hmdb_database.feather       # HMDB metabolite database
+│   ├── lipidmap.feather            # LipidMaps database
+│   ├── pathbank_selected.feather   # PathBank pathways
+│   ├── All_metabolites_synonyms_hmdb.feather
+│   ├── merged_SMP_metabolites.feather      # Merged SMP data
+│   ├── wikipathways_homo_sapiens.feather   # WikiPathways - Human
+│   ├── wikipathways_mus_musculus.feather   # WikiPathways - Mouse
+│   ├── wikipathways_rattus_norvegicus.feather  # WikiPathways - Rat
+│   └── lipid_class_annotation.txt  # Lipid classifications
+├── docs/                           # Documentation
+│   ├── faq.md                      # Frequently asked questions
+│   ├── troubleshooting.md          # Troubleshooting guide
+│   ├── installation.md             # Installation instructions
+│   ├── images/                     # Screenshots and diagrams
+│   └── user-guides/                # Tab-specific user guides
+│       ├── 01-data-cleaning.md
+│       ├── 02-id-annotation.md
+│       ├── 03-pathway-analysis.md
+│       ├── 04-database-setup.md
+│       ├── 05-comparative-analysis.md
+│       └── 06-multiomics-integration.md
+├── build/                          # PyInstaller build artifacts
+├── dist/                           # Distribution executables
+├── logs/                           # Runtime logs
+└── [Cache files] *.pkl, *.cache    # Database/API caches
 ```
 
 ### Building from Source
