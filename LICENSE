@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 Oluwatosin Emmanuel Daramola
+Copyright (c) 2026 Oluwatosin Daramola
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,6 +19,8 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
 
 ## Third-Party Database Licenses
 
@@ -91,4 +93,3 @@ For commercial use of MetaboGraph:
 
 THE SOFTWARE AND DATABASES ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 Users are responsible for ensuring compliance with all applicable database licenses and terms of use.
-

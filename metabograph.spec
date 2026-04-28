@@ -20,6 +20,20 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 # Get the current directory
 spec_root = os.path.abspath(SPECPATH)
 
+# determine project version by reading setup.py (fallback to 0.0.0)
+version = "0.0.0"
+setup_path = os.path.join(spec_root, 'setup.py')
+if os.path.exists(setup_path):
+    import re
+    with open(setup_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    m = re.search(r"version\s*=\s*['\"]([^'\"]+)['\"]", content)
+    if m:
+        version = m.group(1)
+
+# Compose executable name using project name and version
+app_name = f"MetaboGraph_v{version}"
+
 # Collect all data files from packages that need them
 datas = []
 datas += collect_data_files('sklearn')
@@ -415,7 +429,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='MetaboliteAnnotationTool',
+    name=app_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -439,12 +453,13 @@ coll = COLLECT(
     strip=False,
     upx=False,  # DISABLED: UPX can corrupt scipy/numpy DLLs causing crashes on other machines
     upx_exclude=[],
-    name='MetaboGraph'
+    name=app_name
 )
 
 # Create empty Databases folder in the output directory
 import os
-databases_dir = os.path.join(DISTPATH, 'MetaboGraph', 'Databases')
+# use same directory name that PyInstaller is using for the build
+databases_dir = os.path.join(DISTPATH, app_name, 'Databases')
 os.makedirs(databases_dir, exist_ok=True)
 print(f"Created Databases directory: {databases_dir}")
 print("Note: Users must copy database .feather files to this folder after installation.")

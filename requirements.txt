@@ -1,4 +1,5 @@
 # MetaboGraph Requirements
+# Install with: pip install -r requirements.txt
 
 # Core dependencies
 numpy>=1.21.0
@@ -8,8 +9,7 @@ scipy>=1.7.0
 # Data storage
 pyarrow>=5.0.0  # For feather file format
 
-# GUI
-tkinter  # Usually included with Python
+# GUI (tkinter comes built-in with Python, no installation needed)
 
 # Network analysis and visualization
 networkx>=2.6.0
@@ -22,9 +22,10 @@ scikit-learn>=1.0.0
 # Plotting
 matplotlib>=3.4.0
 seaborn>=0.11.0
+pycirclize>=0.3.0  # For chord diagrams
 
 # Database and data processing
-requests>=2.26.0  # For downloading databases
+requests>=2.26.0  # For downloading databases (CRITICAL)
 beautifulsoup4>=4.10.0  # For parsing HTML/XML
 lxml>=4.6.0  # For XML parsing
 
@@ -32,3 +33,12 @@ lxml>=4.6.0  # For XML parsing
 tqdm>=4.62.0  # Progress bars
 openpyxl>=3.0.0  # Excel file support
 xlrd>=2.0.0  # Excel file reading
+
+# Interactive dashboards (optional features)
+dash>=2.0.0  # For interactive network visualization
+dash-cytoscape>=0.3.0  # Cytoscape for network graphs
+plotly>=5.0.0  # For interactive plots
+kaleido>=0.2.1  # For static image export
+
+# Build/deployment (optional)
+PyInstaller>=5.0.0  # For creating Windows executable

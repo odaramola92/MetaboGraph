@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+type: software
+title: "MetaboGraph: A Framework for Metabolomics and Lipidomics Annotation and Pathway Network Analysis"
+version: 1.0.0
+date-released: 2026-04-28
+license: MIT
+authors:
+  - family-names: Daramola
+    given-names: Oluwatosin
+    affiliation: "Texas Tech University"
+  - family-names: Mechref
+    given-names: Yehia
+    affiliation: "Texas Tech University"
+repository-code: "https://github.com/odaramola92/MetaboGraph"
+repository: "https://github.com/odaramola92/MetaboGraph"
+keywords:
+  - metabolomics
+  - lipidomics
+  - metabolite annotation
+  - pathway analysis
+  - pathway enrichment
+  - network analysis
+  - multi-omics
+  - systems biology
+description: >
+  MetaboGraph is a comprehensive framework for metabolomics and lipidomics annotation 
+  and pathway network analysis. It provides an end-to-end workflow for metabolite 
+  identification, pathway enrichment, network analysis, and multi-omics integration. 
+  Designed for both beginner and advanced users, MetaboGraph combines powerful 
+  computational methods with an intuitive graphical interface.
+documentation: "https://github.com/odaramola92/MetaboGraph/docs"
+contact:
+  - name: "Oluwatosin Daramola"
+    email: odaramol@ttu.edu
+references:
+  - type: software
+    title: "NumPy"
+    authors:
+      - name: "NumPy Team"
+    url: "https://numpy.org"
+  - type: software
+    title: "Pandas"
+    authors:
+      - name: "Pandas Team"
+    url: "https://pandas.pydata.org"
+  - type: software
+    title: "SciPy"
+    authors:
+      - name: "SciPy Community"
+    url: "https://scipy.org"
+  - type: software
+    title: "Scikit-learn"
+    authors:
+      - name: "Scikit-learn Team"
+    url: "https://scikit-learn.org"
+  - type: software
+    title: "NetworkX"
+    authors:
+      - name: "NetworkX Team"
+    url: "https://networkx.org"
