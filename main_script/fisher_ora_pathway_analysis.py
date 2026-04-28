@@ -1111,6 +1111,13 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
     Computes weighted enrichment scores across pathways using continuous weights
     derived from log2FC, p-values, and optionally integrated datasets.
 
+        Core formulas used:
+        - Metabolite weight (w_i): depends on weight_mode
+        - Raw pathway score: S = sum(w_i) / sqrt(n)
+        - Standardized Z: Z = (sum(w_i) - n*mu_w) / (sqrt(n)*sigma_w)
+            where mu_w and sigma_w are global mean/std of metabolite weights.
+        - Two-sided p-value: p = 2 * (1 - Phi(|Z|))
+
     Key difference from Fisher ORA:
     - Uses continuous weights (not binary hit/no-hit)
     - But still respects user's significance threshold to avoid noise dilution
@@ -1129,7 +1136,11 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
         How to define metabolite weights:
         - 'signed_p' : sign(log2FC) * -log10(p)
         - 'log2fc'   : raw log2FC
-        - 'combined' : log2FC * -log10(p)
+                - 'combined' : log2FC * -log10(p)
+
+                Algebraic relationship:
+                - combined = signed_p * abs(log2FC)
+                    because log2FC = sign(log2FC) * abs(log2FC)
     integrate_datasets : list of pd.DataFrame, optional
         List of additional omics dataframes with same structure (Name, log2FC, pvalue)
         for multi-omics integration.
@@ -1334,7 +1345,9 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
             p = 1.0
             nan_count += 1
         
-        # Calculate weight based on mode
+        # Calculate weight based on mode.
+        # Note: combined = signed_p * abs(log2FC), so combined additionally scales
+        # by fold-change magnitude while signed_p uses only direction (+/-) and p-strength.
         if weight_mode == 'signed_p':
             weights[name] = np.sign(fc) * -np.log10(max(p, 1e-12))
         elif weight_mode == 'combined':
@@ -1346,6 +1359,24 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
     
     if nan_count > 0 or inf_count > 0:
         logger.warning(f"IWPA: Sanitized {nan_count} NaN and {inf_count} Inf values in metabolite data")
+
+    # Estimate null distribution moments from all metabolite weights.
+    # This calibrates pathway Z-scores across weight modes.
+    weight_values = np.array(list(weights.values()), dtype=float)
+    mu_w = float(np.mean(weight_values)) if weight_values.size > 0 else 0.0
+    sigma_w = float(np.std(weight_values, ddof=1)) if weight_values.size > 1 else 0.0
+
+    if (not np.isfinite(sigma_w)) or sigma_w < 1e-12:
+        logger.warning(
+            "IWPA: Global weight std is near zero; falling back to sigma_w=1.0. "
+            "P-values may be less informative for this dataset."
+        )
+        sigma_w = 1.0
+
+    logger.info(
+        f"IWPA null calibration: mu_w={mu_w:.4g}, sigma_w={sigma_w:.4g}, "
+        f"n_weights={weight_values.size}"
+    )
 
     report_progress(25, "Computing weighted scores...")
 
@@ -1365,8 +1396,10 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
             logger.warning(f"IWPA: Pathway '{pw}' has NaN/Inf weights, sanitizing...")
             w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
         
-        # Calculate Z-score (prevent division by zero)
-        Z = np.sum(w) / np.sqrt(n) if n > 0 else 0.0
+        # Calculate both raw score and standardized Z-score.
+        sum_w = np.sum(w)
+        raw_score = sum_w / np.sqrt(n) if n > 0 else 0.0
+        Z = ((sum_w - (n * mu_w)) / (np.sqrt(n) * sigma_w)) if n > 0 else 0.0
         
         # Sanitize Z if still NaN/Inf
         if np.isnan(Z) or np.isinf(Z):
@@ -1398,6 +1431,7 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
             "pathway_name": pw,
             "n_metabolites": n,
             "score": Z,
+            "raw_score": raw_score,
             "mean_weight": mean_w,
             "std_weight": std_w,
             "Z": Z,
@@ -1423,11 +1457,11 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
 
         for r, q in zip(results, qvals):
             r['fdr_qvalue'] = q
-            r['significant_FDR'] = q <= 0.05
+            r['significant_FDR'] = q <= pvalue_threshold
     else:
         for r in results:
             r['fdr_qvalue'] = r['pvalue']
-            r['significant_FDR'] = r['pvalue'] < 0.05
+            r['significant_FDR'] = r['pvalue'] < pvalue_threshold
 
     report_progress(90, "Finalizing results...")
 
@@ -1470,9 +1504,9 @@ def calculate_pathway_statistics_iwpa(df: pd.DataFrame,
 
     # Show appropriate significance label based on FDR setting
     if fdr_method:
-        logger.info(f"FDR-significant (q ≤ 0.05): {sig_count}")
+        logger.info(f"FDR-significant (q ≤ {pvalue_threshold}): {sig_count}")
     else:
-        logger.info(f"P-value significant (p ≤ 0.05): {sig_count}")
+        logger.info(f"P-value significant (p ≤ {pvalue_threshold}): {sig_count}")
 
     logger.info(f"Activated (Z ≥ {z_threshold}): {activated_count}")
     logger.info(f"Inhibited (Z ≤ -{z_threshold}): {inhibited_count}")

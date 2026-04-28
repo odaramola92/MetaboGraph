@@ -139,6 +139,276 @@ def clean_kegg_id(kegg_id: str) -> str:
     
     return kegg_id.strip().upper()
 
+
+def _is_non_empty_value(value: Any) -> bool:
+    """Return True when a value is present and not an empty/null-like placeholder."""
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except Exception:
+        pass
+    text = str(value).strip()
+    if not text:
+        return False
+    return text.lower() not in ('nan', 'none', 'null')
+
+
+def _normalize_yes_no(value: Any) -> str:
+    """Normalize endogenous-style values to strict Yes/No text."""
+    if value is None:
+        return 'No'
+    text = str(value).strip()
+    if not text or text.lower() in ('nan', 'none', 'null'):
+        return 'No'
+    if text.lower() in ('yes', 'y', 'true', '1'):
+        return 'Yes'
+    if text.lower() in ('no', 'n', 'false', '0'):
+        return 'No'
+    return 'No'
+
+
+def _enforce_endogenous_rules(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure Endogenous/Endogenous_Source are strict Yes/No and never blank.
+
+    Rule: if LipidMaps_ID is present for a row, Endogenous must be Yes.
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+
+    out = df.copy()
+
+    if 'Endogenous' not in out.columns:
+        if 'Endogenous_Source' in out.columns:
+            out['Endogenous'] = out['Endogenous_Source']
+        else:
+            out['Endogenous'] = 'No'
+
+    out['Endogenous'] = out['Endogenous'].apply(_normalize_yes_no)
+
+    if 'Endogenous_Source' in out.columns:
+        out['Endogenous_Source'] = out['Endogenous_Source'].apply(_normalize_yes_no)
+    else:
+        out['Endogenous_Source'] = out['Endogenous']
+
+    if 'LipidMaps_ID' in out.columns:
+        has_lipidmaps = out['LipidMaps_ID'].astype(str).str.strip().ne('') & out['LipidMaps_ID'].notna()
+        out.loc[has_lipidmaps, 'Endogenous'] = 'Yes'
+        out.loc[has_lipidmaps, 'Endogenous_Source'] = 'Yes'
+
+    return out
+
+
+def _compute_lipid_msi_level(lipid_id_value: Any) -> str:
+    """Classify lipid annotation specificity for lipid-mode outputs.
+
+    Rules requested:
+    - Sum composition only (e.g., AcCa(26:1), BisMePA(36:3)) -> Level 3
+    - Chain-resolved/molecular species (e.g., BisMePA(19:3_22:6), Cer(d12:2_14:2)) -> Level 2
+    """
+    if lipid_id_value is None:
+        return ''
+
+    text = str(lipid_id_value).strip()
+    if not text or text.lower() in ('nan', 'none', 'null'):
+        return ''
+
+    match = re.search(r'\(([^)]*)\)', text)
+    if not match:
+        return ''
+
+    inside = match.group(1).strip()
+    if not inside:
+        return ''
+
+    # Molecular species / chain-resolved notation commonly uses '_' (or '/').
+    if '_' in inside or '/' in inside:
+        return 'Level 2'
+
+    # Sum-composition: one total like 36:3 (optionally prefixed like d36:3).
+    if re.match(r'^\s*[A-Za-z]*\d+:\d+\s*$', inside):
+        return 'Level 3'
+
+    # Conservative default for lipid formula-like parenthetical patterns.
+    if re.search(r'\d+:\d+', inside):
+        return 'Level 3'
+
+    return ''
+
+
+def _normalize_header_name(name: Any) -> str:
+    """Normalize a column header for tolerant matching."""
+    try:
+        text = str(name).strip().lower()
+    except Exception:
+        return ''
+    return re.sub(r'[^a-z0-9]+', '', text)
+
+
+def _resolve_column_by_aliases(columns: List[Any], aliases: List[str]) -> Optional[str]:
+    """Find first matching column using exact then normalized alias matching."""
+    if not columns:
+        return None
+
+    # Exact (case-insensitive, trimmed) pass first.
+    col_map_exact = {str(c).strip().lower(): str(c) for c in columns}
+    for alias in aliases:
+        key = str(alias).strip().lower()
+        if key in col_map_exact:
+            return col_map_exact[key]
+
+    # Normalized fallback pass.
+    col_map_norm = {_normalize_header_name(c): str(c) for c in columns}
+    for alias in aliases:
+        key = _normalize_header_name(alias)
+        if key in col_map_norm:
+            return col_map_norm[key]
+
+    return None
+
+
+def _resolve_confidence_columns(df: pd.DataFrame) -> Dict[str, Optional[str]]:
+    """Resolve required columns for MSI/confidence annotation via aliases."""
+    cols = list(df.columns)
+    return {
+        'name': _resolve_column_by_aliases(cols, ['Name', 'Metabolite', 'Molecule', 'LipidID']),
+        'ms2': _resolve_column_by_aliases(cols, [
+            'MS2', 'MS/MS', 'MS2_Type', 'MS2 Type', 'MS2_Status', 'MS2 Status'
+        ]),
+        'ms2_purity': _resolve_column_by_aliases(cols, [
+            'MS2_Purity', 'MS2 Purity [%]', 'MS2 Purity', 'MS2 Purity %', 'MS2Purity'
+        ]),
+        'hmdb': _resolve_column_by_aliases(cols, ['HMDB_ID', 'HMDB ID', 'HMDB']),
+        'kegg': _resolve_column_by_aliases(cols, ['KEGG_ID', 'KEGG ID', 'KEGG']),
+        'lipidmaps': _resolve_column_by_aliases(cols, [
+            'LipidMaps_ID', 'LipidMaps ID', 'LipidMaps', 'LMID'
+        ]),
+    }
+
+
+def _normalize_ms2_text(ms2_value: Any) -> str:
+    try:
+        return str(ms2_value).strip().lower()
+    except Exception:
+        return ''
+
+
+def _parse_ms2_purity(row: pd.Series, schema_cols: Dict[str, Optional[str]]) -> float:
+    """Parse MS2 purity from resolved schema column names."""
+    purity_col = schema_cols.get('ms2_purity') if isinstance(schema_cols, dict) else None
+    raw = row.get(purity_col, np.nan) if purity_col else np.nan
+    if raw is None:
+        return np.nan
+    if isinstance(raw, str):
+        raw = raw.replace('%', '').replace(',', '.').strip()
+    try:
+        return float(pd.to_numeric(raw, errors='coerce'))
+    except Exception:
+        return np.nan
+
+
+def _compute_msi_level_and_confidence(row: pd.Series, schema_cols: Dict[str, Optional[str]]) -> tuple[str, str]:
+    """Classify Level 2 evidence and assign MetaboGraph confidence."""
+    name_col = schema_cols.get('name') if isinstance(schema_cols, dict) else None
+    hmdb_col = schema_cols.get('hmdb') if isinstance(schema_cols, dict) else None
+    kegg_col = schema_cols.get('kegg') if isinstance(schema_cols, dict) else None
+    lipidmaps_col = schema_cols.get('lipidmaps') if isinstance(schema_cols, dict) else None
+    ms2_col = schema_cols.get('ms2') if isinstance(schema_cols, dict) else None
+
+    name_present = _is_non_empty_value(row.get(name_col)) if name_col else False
+    curated_db_present = any(
+        _is_non_empty_value(row.get(col))
+        for col in (hmdb_col, kegg_col, lipidmaps_col)
+        if col
+    )
+
+    if not (name_present or curated_db_present):
+        return 'Level 4', 'low'
+
+    ms2_value = row.get(ms2_col, '') if ms2_col else ''
+    ms2_text = _normalize_ms2_text(ms2_value)
+    ms2_purity = _parse_ms2_purity(row, schema_cols)
+
+    is_preferred = 'dda for preferred ion' in ms2_text
+    is_other = ('dda for other ion' in ms2_text) or ('dda for non-preferred ion' in ms2_text)
+    has_ms2_signal = _is_non_empty_value(ms2_value) and ('no ms2' not in ms2_text)
+    useful_ms2 = is_preferred or is_other or has_ms2_signal
+
+    # Confidence is only elevated above low when both curated ID support and useful MS2 exist.
+    if curated_db_present and useful_ms2:
+        # Level 2 (main): preferred ion + good purity + curated DB support.
+        if is_preferred and not np.isnan(ms2_purity) and ms2_purity >= 80:
+            return 'Level 2', 'high'
+
+        # Level 2 (weaker): curated ID support plus less certain MS2 evidence.
+        if is_preferred and (np.isnan(ms2_purity) or ms2_purity < 80):
+            return 'Level 2', 'medium'
+        if is_other and (np.isnan(ms2_purity) or ms2_purity < 80):
+            return 'Level 2', 'medium'
+        if is_other and not np.isnan(ms2_purity) and ms2_purity >= 80:
+            return 'Level 2', 'medium'
+        if has_ms2_signal:
+            return 'Level 2', 'medium'
+
+    # Name-only, curated-only, or MS2-only rows remain Level 2 but low confidence.
+    return 'Level 2', 'low'
+
+
+def add_msi_confidence_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add MSI_levels and Metabograph_Confidence columns to a DataFrame."""
+    if df is None:
+        return df
+    if not isinstance(df, pd.DataFrame):
+        return df
+    if df.empty:
+        out = df.copy()
+        out['MSI_levels'] = ''
+        out['Metabograph_Confidence'] = ''
+        return out
+
+    out = df.copy()
+    schema_cols = _resolve_confidence_columns(out)
+    msi_conf = out.apply(lambda row: _compute_msi_level_and_confidence(row, schema_cols), axis=1)
+    out['MSI_levels'] = msi_conf.apply(lambda x: x[0] if isinstance(x, tuple) and len(x) == 2 else '')
+    out['Metabograph_Confidence'] = msi_conf.apply(lambda x: x[1] if isinstance(x, tuple) and len(x) == 2 else '')
+    return out
+
+
+def apply_confidence_filter(df: pd.DataFrame, confidence_filter_mode: str = 'exclude_low') -> pd.DataFrame:
+    """Apply confidence-based filtering.
+
+    Modes:
+    - 'exclude_low': remove rows where Metabograph_Confidence == 'low'
+    - 'none': keep all rows
+    """
+    if df is None or not isinstance(df, pd.DataFrame):
+        return df
+    if df.empty:
+        return df.copy()
+
+    mode = confidence_filter_mode if confidence_filter_mode in ('exclude_low', 'none') else 'exclude_low'
+    out = df.copy()
+    if mode == 'none':
+        return out
+
+    # Safety: if no MS2 evidence column exists, confidence cannot be meaningfully stratified.
+    # In this case, keep rows unchanged instead of dropping everything as "low".
+    schema_cols = _resolve_confidence_columns(out)
+    if not schema_cols.get('ms2'):
+        logger.warning(
+            "Confidence filter skipped: MS2 column not found in current dataframe; "
+            "keeping all rows for this sheet/output."
+        )
+        return out.reset_index(drop=True)
+
+    if 'Metabograph_Confidence' not in out.columns:
+        out = add_msi_confidence_columns(out)
+
+    conf = out['Metabograph_Confidence'].astype(str).str.strip().str.lower()
+    out = out[(conf != 'low') & (conf != '') & (conf != 'nan')].copy()
+    return out.reset_index(drop=True)
+
 class MetaboliteIDAnnotator:
     """
     Phase 1: Metabolite ID Annotation Only
@@ -155,6 +425,7 @@ class MetaboliteIDAnnotator:
                  skip_hmdb: bool = False,
                  pubchem_enrichment: bool = True,
                  cleaned_metabolites_df: Optional[pd.DataFrame] = None,
+                 input_df_override: Optional[pd.DataFrame] = None,
                  metabolite_ids_df: Optional[pd.DataFrame] = None,
                  force_file_input: bool = False,
                  # New: polarity DataFrames from memory + filtering options
@@ -163,6 +434,8 @@ class MetaboliteIDAnnotator:
                  id_filter_mode: str = 'none',
                  selected_id_columns: Optional[List[str]] = None,
                  skip_id_filtering: bool = False,
+                 ms2_filter_mode: str = 'none',
+                 confidence_filter_mode: str = 'exclude_low',
                  require_endogenous_yes: bool = False,
                  # New: configurable RT window (minutes) for Formula+ID dedup during ID annotation
                  dedup_rt_window_minutes: float = 2.0):
@@ -189,6 +462,9 @@ class MetaboliteIDAnnotator:
         
         # Store cleaned metabolites DataFrame from data cleaning process
         self.cleaned_metabolites_df = cleaned_metabolites_df
+
+        # Optional direct dataframe override from the upload-time column assignment dialog
+        self.input_df_override = input_df_override
         
         # Store metabolite IDs DataFrame for merging (from MzCloud/Metabolika files)
         self.metabolite_ids_df = metabolite_ids_df
@@ -205,6 +481,8 @@ class MetaboliteIDAnnotator:
         self.id_filter_mode = id_filter_mode if id_filter_mode in ('none', 'any_selected') else 'none'
         self.selected_id_columns = selected_id_columns or []
         self.skip_id_filtering = bool(skip_id_filtering)
+        self.ms2_filter_mode = ms2_filter_mode if ms2_filter_mode in ('none', 'preferred_only', 'preferred_or_other') else 'none'
+        self.confidence_filter_mode = confidence_filter_mode if confidence_filter_mode in ('exclude_low', 'none') else 'exclude_low'
         self.require_endogenous_yes = bool(require_endogenous_yes)
         # RT window for Formula+ID summing during ID annotation stage
         try:
@@ -921,7 +1199,7 @@ class MetaboliteIDAnnotator:
                     base['HMDB_ID'] = base.get('HMDB_ID') or hmdb_res.get('HMDB_ID', '')
                     base['InChIKey'] = base.get('InChIKey') or hmdb_res.get('InChIKey', '')
                     base['Molecular_Formula'] = base.get('Molecular_Formula') or hmdb_res.get('Molecular_Formula', '')
-                    base['Endogenous'] = hmdb_res.get('Endogenous', '')
+                    base['Endogenous'] = _normalize_yes_no(hmdb_res.get('Endogenous', 'No'))
                     base['Super_Class'] = base.get('Super_Class') or hmdb_res.get('Super_Class', '')
                     base['Class'] = base.get('Class') or hmdb_res.get('Class', '')
                     base['Sub_Class'] = base.get('Sub_Class') or hmdb_res.get('Sub_Class', '')
@@ -1259,6 +1537,17 @@ class MetaboliteIDAnnotator:
                 final_df = final_df[cols]
         except Exception:
             pass
+
+        # Lipid-only MSI classification (Level 2 vs Level 3) based on LipidID specificity.
+        try:
+            if 'LipidID' in final_df.columns:
+                final_df['MSI_levels'] = final_df['LipidID'].apply(_compute_lipid_msi_level)
+            else:
+                final_df['MSI_levels'] = ''
+        except Exception as _msi_err:
+            logger.warning(f"[LIPID MODE] Could not compute MSI_levels: {_msi_err}")
+            if 'MSI_levels' not in final_df.columns:
+                final_df['MSI_levels'] = ''
 
         # Persist caches so PubChem/KEGG/HMDB lookups are reused next runs
         try:
@@ -2115,7 +2404,7 @@ class MetaboliteIDAnnotator:
             'HMDB_ID': '',
             'InChIKey': '',
             'Molecular_Formula': '',
-            'Endogenous': '',
+            'Endogenous': 'No',
             'Super_Class': '',
             'Class': '',
             'Sub_Class': '',
@@ -2137,7 +2426,7 @@ class MetaboliteIDAnnotator:
                         'HMDB_ID': str(match.get('HMDB', '')),
                         'InChIKey': str(match.get('InChIKey', '')),
                         'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                        'Endogenous': str(match.get('Is_Endogenous', '')),
+                        'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                         'Super_Class': str(match.get('Super_Class', '')),
                         'Class': str(match.get('Class', '')),
                         'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2159,7 +2448,7 @@ class MetaboliteIDAnnotator:
                         'HMDB_ID': str(match.get('HMDB', '')),
                         'InChIKey': str(match.get('InChIKey', '')),
                         'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                        'Endogenous': str(match.get('Is_Endogenous', '')),
+                        'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                         'Super_Class': str(match.get('Super_Class', '')),
                         'Class': str(match.get('Class', '')),
                         'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2181,7 +2470,7 @@ class MetaboliteIDAnnotator:
                                 'HMDB_ID': str(match.get('HMDB', '')),
                                 'InChIKey': str(match.get('InChIKey', '')),
                                 'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                                'Endogenous': str(match.get('Is_Endogenous', '')),
+                                'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                                 'Super_Class': str(match.get('Super_Class', '')),
                                 'Class': str(match.get('Class', '')),
                                 'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2203,7 +2492,7 @@ class MetaboliteIDAnnotator:
                                 'HMDB_ID': str(match.get('HMDB', '')),
                                 'InChIKey': str(match.get('InChIKey', '')),
                                 'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                                'Endogenous': str(match.get('Is_Endogenous', '')),
+                                'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                                 'Super_Class': str(match.get('Super_Class', '')),
                                 'Class': str(match.get('Class', '')),
                                 'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2225,7 +2514,7 @@ class MetaboliteIDAnnotator:
                                 'HMDB_ID': str(match.get('HMDB', '')),
                                 'InChIKey': str(match.get('InChIKey', '')),
                                 'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                                'Endogenous': str(match.get('Is_Endogenous', '')),
+                                'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                                 'Super_Class': str(match.get('Super_Class', '')),
                                 'Class': str(match.get('Class', '')),
                                 'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2247,7 +2536,7 @@ class MetaboliteIDAnnotator:
                                 'HMDB_ID': str(match.get('HMDB', '')),
                                 'InChIKey': str(match.get('InChIKey', '')),
                                 'Molecular_Formula': str(match.get('Molecular_Formula', '')),
-                                'Endogenous': str(match.get('Is_Endogenous', '')),
+                                'Endogenous': _normalize_yes_no(match.get('Is_Endogenous', 'No')),
                                 'Super_Class': str(match.get('Super_Class', '')),
                                 'Class': str(match.get('Class', '')),
                                 'Sub_Class': str(match.get('Sub_Class', '')),
@@ -2720,44 +3009,11 @@ class MetaboliteIDAnnotator:
                         progress_msg = f"Progress: {i}/{len(records)} ({progress_percent:.1f}%)"
                         logger.info(progress_msg)
                         last_logged_progress = int(progress_percent // 20) * 20
-                    
-                    # Always call progress callback for GUI (keeps progress bar smooth)
-                    if self.progress_callback:
-                        detailed_msg = f"Completed: {metabolite}"
-                        self.progress_callback(i, len(records), detailed_msg)
-                        
                 except Exception as e:
-                    logger.error(f"Error processing {metabolite}: {e}")
-                    # Add error result
-                    results.append({
-                        'Name': metabolite,
-                        'LipidMaps_ID': '', 'PubChem_CID': '', 'KEGG_ID': '', 'HMDB_ID': '', 'ChEBI_ID': '',
-                        'CAS': '', 'SMILES': '', 'InChI': '', 'InChIKey': '',
-                        'IUPAC_Name': '', 'Molecular_Formula': '', 'Molecular_Weight': '',
-                        'Endogenous': '', 'Super_Class': '', 'Class': '', 'Sub_Class': '',
-                        'annotation_sources': ['ERROR']
-                    })
-
+                    logger.error(f"Error processing metabolite {metabolite}: {e}")
+        
         # Convert results to DataFrame
-        results_df = pd.DataFrame(results)
-        
-        # Debug: Check Endogenous values before merge
-        if 'Endogenous' in results_df.columns:
-            endogenous_before = results_df['Endogenous'].tolist()
-            #logger.info(f"[DEBUG] Endogenous values before merge: {endogenous_before}")
-        
-        # Merge with original data (preserve original columns)
-        final_df = input_df.merge(results_df, on='Name', how='left', suffixes=('', '_annotated'))
-        
-        # Fill missing annotation columns
-        annotation_columns = ['LipidMaps_ID', 'PubChem_CID', 'KEGG_ID', 'HMDB_ID', 'ChEBI_ID', 'CAS', 
-                             'SMILES', 'InChI', 'InChIKey', 'IUPAC_Name', 'Molecular_Formula', 
-                             'Molecular_Weight', 'Endogenous', 'Super_Class', 'Class', 'Sub_Class',
-                             'annotation_sources']
-        
-        for col in annotation_columns:
-            if col not in final_df.columns:
-                final_df[col] = ''
+        final_df = pd.DataFrame(results) if results else pd.DataFrame()
         
         # Debug: Check Endogenous values after merge and fill
         if 'Endogenous' in final_df.columns:
@@ -2813,39 +3069,45 @@ class MetaboliteIDAnnotator:
             logger.info("\n" + "="*80)
             logger.info("🔍 DEBUG: DETERMINING INPUT SOURCE FOR ID ANNOTATION")
             logger.info("="*80)
-            
-            # Priority 1: Use cleaned_metabolites_df (Combined sheet) if available
-            cleaned_data_in_memory = self._get_cleaned_data_from_memory()
-            
-            logger.info(f"Checking cleaned_metabolites_df: {cleaned_data_in_memory is not None}")
-            if cleaned_data_in_memory is not None:
-                logger.info(f"  - Shape: {cleaned_data_in_memory.shape}")
-                logger.info(f"  - Columns: {list(cleaned_data_in_memory.columns)[:5]}...")
-            
-            logger.info(f"Checking pos_df: {self.pos_df is not None}")
-            if self.pos_df is not None and isinstance(self.pos_df, pd.DataFrame):
-                logger.info(f"  - Shape: {self.pos_df.shape}")
-                logger.info(f"  - Columns: {list(self.pos_df.columns)[:5]}...")
-            
-            logger.info(f"force_file_input: {self.force_file_input}")
-            logger.info("="*80 + "\n")
-            
-            if (cleaned_data_in_memory is not None and not cleaned_data_in_memory.empty and 
-                not self.force_file_input):
-                # Use cleaned data from memory as primary source (Combined sheet with ALL metabolites)
-                logger.info("="*60)
-                logger.info("✅ USING COMBINED SHEET FROM MEMORY AS PRIMARY INPUT")
-                logger.info("="*60)
-                logger.info(f"Using Combined sheet from memory: {len(cleaned_data_in_memory)} rows")
-                input_df = cleaned_data_in_memory.copy()
-                logger.info(f"Columns in Combined sheet: {list(input_df.columns)}")
-            # Priority 2: Use pos_df if available (custom mode with pre-processed/renamed columns)
-            elif self.pos_df is not None and isinstance(self.pos_df, pd.DataFrame) and not self.pos_df.empty:
-                logger.info("⚠️ [METABOLITE MODE] Using pre-loaded dataframe (Positive sheet - fallback)")
-                input_df = self.pos_df.copy()
-                logger.info(f"[METABOLITE MODE] Columns in pre-loaded dataframe: {list(input_df.columns)}")
+
+            if self.input_df_override is not None and isinstance(self.input_df_override, pd.DataFrame) and not self.input_df_override.empty:
+                logger.info("✅ USING USER-ASSIGNED INPUT DATAFRAME FROM COLUMN ASSIGNMENT DIALOG")
+                input_df = self.input_df_override.copy()
+                logger.info(f"User-assigned input rows: {len(input_df)}")
+                logger.info(f"Columns in user-assigned input: {list(input_df.columns)}")
             else:
-                # Priority 3: Use file input when no memory data available or when forced
+                # Priority 1: Use cleaned_metabolites_df (Combined sheet) if available
+                cleaned_data_in_memory = self._get_cleaned_data_from_memory()
+                
+                logger.info(f"Checking cleaned_metabolites_df: {cleaned_data_in_memory is not None}")
+                if cleaned_data_in_memory is not None:
+                    logger.info(f"  - Shape: {cleaned_data_in_memory.shape}")
+                    logger.info(f"  - Columns: {list(cleaned_data_in_memory.columns)[:5]}...")
+                
+                logger.info(f"Checking pos_df: {self.pos_df is not None}")
+                if self.pos_df is not None and isinstance(self.pos_df, pd.DataFrame):
+                    logger.info(f"  - Shape: {self.pos_df.shape}")
+                    logger.info(f"  - Columns: {list(self.pos_df.columns)[:5]}...")
+                
+                logger.info(f"force_file_input: {self.force_file_input}")
+                logger.info("="*80 + "\n")
+                
+                if (cleaned_data_in_memory is not None and not cleaned_data_in_memory.empty and 
+                    not self.force_file_input):
+                    # Use cleaned data from memory as primary source (Combined sheet with ALL metabolites)
+                    logger.info("="*60)
+                    logger.info("✅ USING COMBINED SHEET FROM MEMORY AS PRIMARY INPUT")
+                    logger.info("="*60)
+                    logger.info(f"Using Combined sheet from memory: {len(cleaned_data_in_memory)} rows")
+                    input_df = cleaned_data_in_memory.copy()
+                    logger.info(f"Columns in Combined sheet: {list(input_df.columns)}")
+                # Priority 2: Use pos_df if available (custom mode with pre-processed/renamed columns)
+                elif self.pos_df is not None and isinstance(self.pos_df, pd.DataFrame) and not self.pos_df.empty:
+                    logger.info("⚠️ [METABOLITE MODE] Using pre-loaded dataframe (Positive sheet - fallback)")
+                    input_df = self.pos_df.copy()
+                    logger.info(f"[METABOLITE MODE] Columns in pre-loaded dataframe: {list(input_df.columns)}")
+                else:
+                    # Priority 3: Use file input when no memory data available or when forced
                     if self.force_file_input:
                         logger.info(f"Force file input enabled - loading input file: {self.input_file}")
                     else:
@@ -2966,9 +3228,22 @@ class MetaboliteIDAnnotator:
             except Exception as e:
                 logger.warning(f"Failed to assign IDs to pos/neg DataFrames: {e}")
 
+            # Add MSI-level and confidence columns to merged output.
+            annotated_df = add_msi_confidence_columns(annotated_df)
+            before_conf = len(annotated_df)
+            annotated_df = apply_confidence_filter(annotated_df, self.confidence_filter_mode)
+            if self.confidence_filter_mode != 'none':
+                logger.info(f"Confidence filter ({self.confidence_filter_mode}): kept {len(annotated_df)}/{before_conf} rows")
+
             # Save results (multi-sheet when applicable)
             logger.info(f"Saving annotated results to: {self.output_file}")
+            final_merged_df = annotated_df
             try:
+                # SMILES is used internally for some lookup paths, but it should not be
+                # written to the final exported sheets.
+                export_drop_cols = ['SMILES']
+                annotated_df = annotated_df.drop(columns=[c for c in export_drop_cols if c in annotated_df.columns], errors='ignore')
+
                 # Prepare polarity outputs with robust fallbacks so the sheets always exist
                 pos_df_out: pd.DataFrame = pd.DataFrame()
                 neg_df_out: pd.DataFrame = pd.DataFrame()
@@ -2995,6 +3270,46 @@ class MetaboliteIDAnnotator:
                     except Exception:
                         neg_df_out = pd.DataFrame()
 
+                if isinstance(pos_df_out, pd.DataFrame) and 'SMILES' in pos_df_out.columns:
+                    pos_df_out = pos_df_out.drop(columns=['SMILES'])
+                if isinstance(neg_df_out, pd.DataFrame) and 'SMILES' in neg_df_out.columns:
+                    neg_df_out = neg_df_out.drop(columns=['SMILES'])
+
+                # Rebuild the merged sheet from Pos/Neg outputs when they are available.
+                # This preserves the existing Pos/Neg priority workflow and avoids using
+                # the Combined annotation dataframe as the final merged export.
+                merged_df_out = pd.DataFrame()
+                merged_sources = []
+                if isinstance(pos_df_out, pd.DataFrame) and not pos_df_out.empty:
+                    merged_sources.append(pos_df_out.copy())
+                if isinstance(neg_df_out, pd.DataFrame) and not neg_df_out.empty:
+                    merged_sources.append(neg_df_out.copy())
+
+                if merged_sources:
+                    merged_df_out = pd.concat(merged_sources, ignore_index=True)
+                    if 'LipidID' in merged_df_out.columns:
+                        merged_df_out = merged_df_out.drop_duplicates(subset=['LipidID'], keep='first')
+                    elif 'Name' in merged_df_out.columns:
+                        merged_df_out = merged_df_out.drop_duplicates(subset=['Name'], keep='first')
+
+                    merged_df_out = add_msi_confidence_columns(merged_df_out)
+                    merged_df_out = apply_confidence_filter(merged_df_out, self.confidence_filter_mode)
+                else:
+                    merged_df_out = add_msi_confidence_columns(annotated_df.copy())
+                    merged_df_out = apply_confidence_filter(merged_df_out, self.confidence_filter_mode)
+
+                merged_df_out = _enforce_endogenous_rules(merged_df_out)
+
+                final_merged_df = merged_df_out
+
+                # Ensure MSI columns exist in all output sheets.
+                pos_df_out = add_msi_confidence_columns(pos_df_out)
+                neg_df_out = add_msi_confidence_columns(neg_df_out)
+                pos_df_out = apply_confidence_filter(pos_df_out, self.confidence_filter_mode)
+                neg_df_out = apply_confidence_filter(neg_df_out, self.confidence_filter_mode)
+                pos_df_out = _enforce_endogenous_rules(pos_df_out)
+                neg_df_out = _enforce_endogenous_rules(neg_df_out)
+
                 # Expose for GUI/memory consumers
                 try:
                     if isinstance(pos_df_out, pd.DataFrame):
@@ -3005,7 +3320,7 @@ class MetaboliteIDAnnotator:
                     pass
 
                 with pd.ExcelWriter(self.output_file, engine='openpyxl') as writer:
-                    annotated_df.to_excel(writer, index=False, sheet_name='Merged_IDs')
+                    merged_df_out.to_excel(writer, index=False, sheet_name='Merged_IDs')
                     # Always create Pos_id and Neg_id sheets (even if empty) so downstream steps find them
                     (pos_df_out if isinstance(pos_df_out, pd.DataFrame) else pd.DataFrame()).to_excel(
                         writer, index=False, sheet_name='Pos_id'
@@ -3013,6 +3328,28 @@ class MetaboliteIDAnnotator:
                     (neg_df_out if isinstance(neg_df_out, pd.DataFrame) else pd.DataFrame()).to_excel(
                         writer, index=False, sheet_name='Neg_id'
                     )
+
+                # QA log: Endogenous Yes/No distribution per output sheet.
+                def _log_endogenous_counts(df_obj: Optional[pd.DataFrame], sheet_name: str) -> None:
+                    if not isinstance(df_obj, pd.DataFrame):
+                        logger.info(f"[QA] {sheet_name} Endogenous: sheet unavailable")
+                        return
+                    if df_obj.empty:
+                        logger.info(f"[QA] {sheet_name} Endogenous: empty sheet")
+                        return
+                    if 'Endogenous' not in df_obj.columns:
+                        logger.info(f"[QA] {sheet_name} Endogenous: column missing")
+                        return
+
+                    normalized = df_obj['Endogenous'].apply(_normalize_yes_no)
+                    yes_count = int((normalized == 'Yes').sum())
+                    no_count = int((normalized == 'No').sum())
+                    total_count = int(len(normalized))
+                    logger.info(f"[QA] {sheet_name} Endogenous -> Yes: {yes_count}, No: {no_count}, Total: {total_count}")
+
+                _log_endogenous_counts(merged_df_out, 'Merged_IDs')
+                _log_endogenous_counts(pos_df_out, 'Pos_id')
+                _log_endogenous_counts(neg_df_out, 'Neg_id')
             except Exception as e:
                 # Fallback to single-sheet save if multi-sheet failed
                 logger.warning(f"Multi-sheet save failed ({e}); falling back to single sheet.")
@@ -3025,25 +3362,26 @@ class MetaboliteIDAnnotator:
             self._save_cache(self.lipidmaps_cache, "lipidmaps_cache.pkl")
 
             # Print summary statistics
-            total_metabolites = len(annotated_df)
+            total_metabolites = len(final_merged_df) if isinstance(final_merged_df, pd.DataFrame) else len(annotated_df)
             
             # Count database hits
             lipidmaps_specific = 0
             lipidmaps_total = 0
-                
-            pubchem_hits = annotated_df['PubChem_CID'].astype(str).str.strip().ne('').sum()
-            kegg_hits = annotated_df['KEGG_ID'].astype(str).str.strip().ne('').sum()
-            hmdb_hits = annotated_df['HMDB_ID'].astype(str).str.strip().ne('').sum()
-            chebi_hits = annotated_df['ChEBI_ID'].astype(str).str.strip().ne('').sum()
+            stats_df = final_merged_df if isinstance(final_merged_df, pd.DataFrame) else annotated_df
+
+            pubchem_hits = stats_df['PubChem_CID'].astype(str).str.strip().ne('').sum() if 'PubChem_CID' in stats_df.columns else 0
+            kegg_hits = stats_df['KEGG_ID'].astype(str).str.strip().ne('').sum() if 'KEGG_ID' in stats_df.columns else 0
+            hmdb_hits = stats_df['HMDB_ID'].astype(str).str.strip().ne('').sum() if 'HMDB_ID' in stats_df.columns else 0
+            chebi_hits = stats_df['ChEBI_ID'].astype(str).str.strip().ne('').sum() if 'ChEBI_ID' in stats_df.columns else 0
 
             logger.info("="*60)
             logger.info("ID ANNOTATION SUMMARY")
             logger.info("="*60)
             logger.info(f"Total metabolites processed: {total_metabolites}")
-            logger.info(f"PubChem CID found: {pubchem_hits} ({pubchem_hits/total_metabolites*100:.1f}%)")
-            logger.info(f"KEGG ID found: {kegg_hits} ({kegg_hits/total_metabolites*100:.1f}%)")
-            logger.info(f"HMDB ID found: {hmdb_hits} ({hmdb_hits/total_metabolites*100:.1f}%)")
-            logger.info(f"ChEBI ID found: {chebi_hits} ({chebi_hits/total_metabolites*100:.1f}%)")
+            logger.info(f"PubChem CID found: {pubchem_hits} ({(pubchem_hits/total_metabolites*100 if total_metabolites else 0):.1f}%)")
+            logger.info(f"KEGG ID found: {kegg_hits} ({(kegg_hits/total_metabolites*100 if total_metabolites else 0):.1f}%)")
+            logger.info(f"HMDB ID found: {hmdb_hits} ({(hmdb_hits/total_metabolites*100 if total_metabolites else 0):.1f}%)")
+            logger.info(f"ChEBI ID found: {chebi_hits} ({(chebi_hits/total_metabolites*100 if total_metabolites else 0):.1f}%)")
             logger.info("="*60)
 
             # Expose polarity ID DataFrames (if produced) for external callers (GUI memory_store)
@@ -3091,7 +3429,7 @@ class MetaboliteIDAnnotator:
 
             # Define ID columns and feature columns
             id_columns_all = [
-                'LipidMaps_ID', 'PubChem_CID', 'KEGG_ID', 'HMDB_ID', 'ChEBI_ID', 'CAS',
+                'LipidMaps_ID', 'PubChem_CID', 'KEGG_ID', 'HMDB_ID', 'ChEBI_ID', 'CAS', 'Endogenous',
                 'SMILES', 'InChI', 'InChIKey', 'IUPAC_Name', 'Super_Class', 'Class', 'Sub_Class', 'Endogenous_Source'
             ]
             # Only keep those present in merged IDs
@@ -3322,9 +3660,29 @@ class MetaboliteIDAnnotator:
                             mask_any = colmask if isinstance(mask_any, (pd.Series)) is False else (mask_any | colmask)
                         if isinstance(mask_any, pd.Series):
                             merged = merged[mask_any]
+
+                if self.ms2_filter_mode != 'none' and 'MS2' in merged.columns:
+                    if self.ms2_filter_mode == 'preferred_only':
+                        merged = merged[merged['MS2'].astype(str).str.strip() == 'DDA for preferred ion']
+                    elif self.ms2_filter_mode == 'preferred_or_other':
+                        merged = merged[
+                            merged['MS2'].astype(str).str.strip().isin(['DDA for preferred ion', 'DDA for other ion'])
+                        ]
+
+                merged = _enforce_endogenous_rules(merged)
+
                 if self.require_endogenous_yes and 'Endogenous_Source' in merged.columns:
                     merged = merged[merged['Endogenous_Source'].astype(str).str.strip().str.lower() == 'yes']
 
+                # Keep endogenous values explicit and non-empty in the saved outputs.
+                for col in ['Endogenous', 'Endogenous_Source']:
+                    if col in merged.columns:
+                        merged[col] = merged[col].apply(_normalize_yes_no)
+                    elif col == 'Endogenous' and 'HMDB_ID' in merged.columns:
+                        merged[col] = 'No'
+
+                merged = add_msi_confidence_columns(merged)
+                merged = apply_confidence_filter(merged, self.confidence_filter_mode)
                 return merged.reset_index(drop=True)
 
             results['pos_id_df'] = _merge_ids(self.pos_df, 'positive')
@@ -3627,6 +3985,7 @@ def refilter_annotated_excel(
     selected_id_columns: Optional[List[str]] = None,
     skip_id_filtering: bool = False,
     ms2_filter_mode: str = 'none',
+    confidence_filter_mode: str = 'exclude_low',
     require_endogenous_yes: bool = False,
     progress_callback: Optional[callable] = None
 ) -> Dict[str, Any]:
@@ -3640,6 +3999,7 @@ def refilter_annotated_excel(
                             If empty or None, no ID-based filtering is applied
         skip_id_filtering: If True, skip all ID-based filtering (save all metabolites)
         ms2_filter_mode: MS2 filter mode ('none', 'preferred_only', 'preferred_or_other')
+        confidence_filter_mode: Confidence filter mode ('exclude_low' or 'none')
         require_endogenous_yes: If True, require Endogenous_Source == 'Yes'
         progress_callback: Optional callback function to report progress
     
@@ -3697,6 +4057,7 @@ def refilter_annotated_excel(
             # Force-disable all filters for lipid-mode re-filtering
             selected_id_columns = []
             ms2_filter_mode = 'none'
+            confidence_filter_mode = 'none'
             require_endogenous_yes = False
 
         # Helper function to apply filters to a dataframe
@@ -3735,6 +4096,13 @@ def refilter_annotated_excel(
                 before_endo = len(df)
                 df = df[df['Endogenous_Source'].astype(str).str.strip().str.lower() == 'yes'].copy()
                 log(f"  {sheet_name}: After Endogenous filter: {len(df)} rows (removed {before_endo - len(df)})")
+
+            # Add MSI/confidence annotation columns on filtered results.
+            df = add_msi_confidence_columns(df)
+            before_conf = len(df)
+            df = apply_confidence_filter(df, confidence_filter_mode)
+            if confidence_filter_mode != 'none':
+                log(f"  {sheet_name}: After confidence filter ({confidence_filter_mode}): {len(df)} rows (removed {before_conf - len(df)})")
             
             removed = original_count - len(df)
             log(f"  {sheet_name}: Final count: {len(df)} rows (removed {removed} total)")
@@ -3782,6 +4150,9 @@ def refilter_annotated_excel(
             before_dedup = len(merged_filtered)
             merged_filtered = merged_filtered.drop_duplicates(subset=['Name'], keep='first')
             log(f"Merged_IDs: Removed {before_dedup - len(merged_filtered)} duplicates based on 'Name'")
+
+        merged_filtered = add_msi_confidence_columns(merged_filtered)
+        merged_filtered = apply_confidence_filter(merged_filtered, confidence_filter_mode)
         
         log(f"Merged_IDs: Final count: {len(merged_filtered)} rows")
         

@@ -10,6 +10,7 @@ import os
 import sys
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional, Dict, Any, Callable, List
 
@@ -117,7 +118,7 @@ class CleanColumnDataCleaner:
             clean_name = col
             for pattern in patterns_to_remove:
                 if pattern:  # Skip empty patterns
-                    clean_name = clean_name.replace(pattern, '')
+                    clean_name = re.sub(re.escape(pattern), '', clean_name, flags=re.IGNORECASE)
             
             # Clean up extra spaces and special characters
             clean_name = ' '.join(clean_name.split())  # Remove multiple spaces
@@ -2019,25 +2020,19 @@ class CleanColumnDataCleaner:
             #   However, we need to pass the mappings here for the save step since we moved mapping to save time
             # - Combined mode: Use the single sample_mapping from config
             if mode == 'separate':
-                # For separate mode, we need to merge both positive and negative mappings for the save step
-                # since both pos and neg data will be saved to the same Excel file
+                # Keep polarity mappings separate to avoid key collisions (s1-1 etc.)
+                # that overwrite positive names with negative names.
                 pos_mapping = config.get('positive_sample_mapping', None)
                 neg_mapping = config.get('negative_sample_mapping', None)
-                # Merge the mappings (if both exist, combine them; if only one exists, use it)
-                sample_mapping = {}
-                if pos_mapping:
-                    sample_mapping.update(pos_mapping)
-                if neg_mapping:
-                    sample_mapping.update(neg_mapping)
-                # If no mappings at all, set to None
-                sample_mapping = sample_mapping if sample_mapping else None
+                sample_mapping = None
                 self._log(f"   🔍 DEBUG - Separate mode sample mapping:\n")
                 self._log(f"      Positive mapping: {pos_mapping}\n")
                 self._log(f"      Negative mapping: {neg_mapping}\n")
-                self._log(f"      Merged mapping: {sample_mapping}\n")
             else:
                 # Combined mode
                 sample_mapping = config.get('sample_mapping', None)
+                pos_mapping = None
+                neg_mapping = None
                 self._log(f"   🔍 DEBUG - Combined mode sample mapping: {sample_mapping}\n")
             
             column_clean_patterns = config.get('column_clean_patterns', None)
@@ -2049,6 +2044,8 @@ class CleanColumnDataCleaner:
                 pos_class_df=pos_class_df,
                 neg_class_df=neg_class_df,
                 sample_mapping=sample_mapping,
+                pos_sample_mapping=pos_mapping,
+                neg_sample_mapping=neg_mapping,
                 column_clean_patterns=column_clean_patterns
             )
             
@@ -2394,8 +2391,17 @@ class CleanColumnDataCleaner:
         # EARLY: Apply grade-based filtering BEFORE sample name mapping to avoid duplicate collisions
         grade_threshold = config.get('grade_threshold', '')
         filter_rej = config.get('filter_rej', False)
+        grade_filter_remove_rows = config.get('grade_filter_remove_rows', False)
+        grade_filter_row_keep_pct = config.get('grade_filter_row_keep_pct', 80)
         try:
-            df_clean = self._apply_grade_filtering(df_clean, grade_threshold, polarity, filter_rej)
+            df_clean = self._apply_grade_filtering(
+                df_clean,
+                grade_threshold,
+                polarity,
+                filter_rej,
+                remove_rows_by_grade=grade_filter_remove_rows,
+                min_keep_percentage=grade_filter_row_keep_pct,
+            )
         except Exception as _:
             # Continue even if grade filtering fails; better to proceed than abort
             pass
@@ -3199,9 +3205,19 @@ class CleanColumnDataCleaner:
 
         return build(pos_df), build(neg_df)
 
-    def _apply_grade_filtering(self, df: pd.DataFrame, grade_threshold: str, polarity: str, filter_rej: bool = False) -> pd.DataFrame:
+    def _apply_grade_filtering(
+        self,
+        df: pd.DataFrame,
+        grade_threshold: str,
+        polarity: str,
+        filter_rej: bool = False,
+        remove_rows_by_grade: bool = False,
+        min_keep_percentage: float = 80.0,
+    ) -> pd.DataFrame:
         """
-        Apply grade-based filtering: set Area values to 0 for poor quality grades.
+        Apply grade-based filtering using one of two modes:
+        1) Default mode: set Area values to 0 for poor quality grades.
+        2) Alternative mode: remove full rows when acceptable-grade coverage is below threshold.
         Optionally filter by Rej column to remove rejected rows.
         
         Args:
@@ -3209,9 +3225,11 @@ class CleanColumnDataCleaner:
             grade_threshold: Threshold string (e.g., 'A,B,C'). Empty string skips grade filtering.
             polarity: 'positive' or 'negative' for logging
             filter_rej: If True, keep only rows where Rej column is False
+            remove_rows_by_grade: If True, remove rows below acceptable-grade coverage threshold
+            min_keep_percentage: Minimum percentage of mapped samples per row with acceptable grades
             
         Returns:
-            DataFrame with Area values filtered by grade and/or Rej column
+            DataFrame with grade filtering applied and/or Rej filtering
         """
         try:
             # Check if we should skip both filters
@@ -3330,9 +3348,23 @@ class CleanColumnDataCleaner:
                 acceptable_grades = ['A', 'B', 'C']
                 self._log(f"   Warning: Could not parse grade threshold '{grade_threshold}', using default: A, B, C\n")
             
+            # Parse and validate row-coverage threshold
+            try:
+                min_keep_percentage = float(str(min_keep_percentage).replace('%', '').strip())
+            except Exception:
+                min_keep_percentage = 80.0
+            if min_keep_percentage < 0:
+                min_keep_percentage = 0.0
+            if min_keep_percentage > 100:
+                min_keep_percentage = 100.0
+
             self._log(f"   Grade threshold input: {grade_threshold}\n")
             self._log(f"   Acceptable grades: {', '.join(acceptable_grades)}\n")
-            self._log(f"   Poor grades (will be set to 0): All other grades\n\n")
+            if remove_rows_by_grade:
+                self._log(f"   Mode: REMOVE ROWS below {min_keep_percentage:.1f}% acceptable-grade coverage\n\n")
+            else:
+                self._log(f"   Mode: SET AREA TO 0 for poor grades\n")
+                self._log(f"   Poor grades (will be set to 0): All other grades\n\n")
             
             # DEBUG: Show sample grade values
             self._log(f"   📋 DEBUG: Inspecting Grade column values...\n")
@@ -3340,50 +3372,78 @@ class CleanColumnDataCleaner:
                 sample_values = df[grade_col].unique()[:5]
                 self._log(f"      {grade_col}: {sample_values}\n")
             
-            # Track statistics before filtering
-            rows_with_nonzero_before = (df[sample_cols] != 0).any(axis=1).sum()
-            total_nonzero_values_before = (df[sample_cols] != 0).sum().sum()
-            
-            # Apply filtering: set sample values to 0 for rows with poor grades
-            total_changed = 0
-            sample_stats = []
-            
-            for grade_col, sample_col in grade_to_sample_map.items():
-                # Find rows where grade is NOT acceptable
-                poor_grade_mask = ~df[grade_col].astype(str).str.upper().isin(acceptable_grades)
-                
-                # Count non-zero values that will be changed to zero
-                values_to_change = ((df[sample_col] != 0) & poor_grade_mask).sum()
-                
-                if values_to_change > 0:
-                    df.loc[poor_grade_mask, sample_col] = 0
-                    total_changed += values_to_change
-                    sample_stats.append(f"      • {sample_col}: {values_to_change} values → 0")
-            
-            # Track statistics after filtering
-            total_nonzero_values_after = (df[sample_cols] != 0).sum().sum()
-            rows_with_all_zeros_after = (df[sample_cols] == 0).all(axis=1).sum()
-            rows_still_nonzero = (df[sample_cols] != 0).any(axis=1).sum()
-            
-            # Display detailed statistics
-            self._log(f"   📉 Filtering Results:\n")
-            self._log(f"      Total Area values set to 0 (due to poor grades): {total_changed:,}\n")
-            self._log(f"      Non-zero values before: {total_nonzero_values_before:,}\n")
-            self._log(f"      Non-zero values after:  {total_nonzero_values_after:,}\n")
-            self._log(f"      Reduction: {total_nonzero_values_before - total_nonzero_values_after:,} values ({((total_nonzero_values_before - total_nonzero_values_after) / total_nonzero_values_before * 100):.1f}%)\n\n")
-            
-            self._log(f"   📊 Row Impact:\n")
-            self._log(f"      Rows with non-zero values before: {rows_with_nonzero_before:,}\n")
-            self._log(f"      Rows with non-zero values after:  {rows_still_nonzero:,}\n")
-            self._log(f"      Rows now all-zero (will be removed later): {rows_with_all_zeros_after:,}\n\n")
-            
-            # Show per-sample breakdown if there are changes
-            if sample_stats:
-                self._log(f"   📝 Per-Sample Breakdown:\n")
-                for stat in sample_stats[:10]:  # Show first 10 samples
-                    self._log(f"{stat}\n")
-                if len(sample_stats) > 10:
-                    self._log(f"      ... and {len(sample_stats) - 10} more samples\n")
+            if remove_rows_by_grade:
+                # Row-level mode: keep rows meeting the acceptable-grade percentage threshold.
+                total_pairs = len(grade_to_sample_map)
+                if total_pairs == 0:
+                    self._log("   ⚠️ No Grade→Sample pairs available for row-level filtering; skipping\n")
+                    return df
+
+                acceptable_counts = pd.Series(0, index=df.index, dtype='int64')
+                for grade_col in grade_to_sample_map.keys():
+                    acceptable_mask = df[grade_col].astype(str).str.upper().isin(acceptable_grades)
+                    acceptable_counts = acceptable_counts + acceptable_mask.astype('int64')
+
+                acceptable_pct = (acceptable_counts / float(total_pairs)) * 100.0
+                keep_mask = acceptable_pct >= min_keep_percentage
+
+                rows_before = len(df)
+                rows_kept = int(keep_mask.sum())
+                rows_removed = rows_before - rows_kept
+
+                self._log("   📉 Row-Level Grade Coverage Results:\n")
+                self._log(f"      Total rows before: {rows_before:,}\n")
+                self._log(f"      Required acceptable-grade coverage: {min_keep_percentage:.1f}%\n")
+                self._log(f"      Grade/sample pairs considered per row: {total_pairs}\n")
+                self._log(f"      Rows kept: {rows_kept:,}\n")
+                self._log(f"      Rows removed: {rows_removed:,}\n")
+
+                if rows_before > 0:
+                    self._log(f"      Retention: {(rows_kept / rows_before) * 100:.1f}%\n")
+
+                df = df.loc[keep_mask].copy()
+            else:
+                # Value-level mode (default): set Area values to zero for poor grades.
+                rows_with_nonzero_before = (df[sample_cols] != 0).any(axis=1).sum()
+                total_nonzero_values_before = (df[sample_cols] != 0).sum().sum()
+
+                total_changed = 0
+                sample_stats = []
+
+                for grade_col, sample_col in grade_to_sample_map.items():
+                    poor_grade_mask = ~df[grade_col].astype(str).str.upper().isin(acceptable_grades)
+                    values_to_change = ((df[sample_col] != 0) & poor_grade_mask).sum()
+
+                    if values_to_change > 0:
+                        df.loc[poor_grade_mask, sample_col] = 0
+                        total_changed += values_to_change
+                        sample_stats.append(f"      • {sample_col}: {values_to_change} values → 0")
+
+                total_nonzero_values_after = (df[sample_cols] != 0).sum().sum()
+                rows_with_all_zeros_after = (df[sample_cols] == 0).all(axis=1).sum()
+                rows_still_nonzero = (df[sample_cols] != 0).any(axis=1).sum()
+
+                self._log(f"   📉 Filtering Results:\n")
+                self._log(f"      Total Area values set to 0 (due to poor grades): {total_changed:,}\n")
+                self._log(f"      Non-zero values before: {total_nonzero_values_before:,}\n")
+                self._log(f"      Non-zero values after:  {total_nonzero_values_after:,}\n")
+                if total_nonzero_values_before > 0:
+                    reduction_pct = ((total_nonzero_values_before - total_nonzero_values_after) / total_nonzero_values_before * 100)
+                else:
+                    reduction_pct = 0.0
+                self._log(f"      Reduction: {total_nonzero_values_before - total_nonzero_values_after:,} values ({reduction_pct:.1f}%)\n\n")
+
+                self._log(f"   📊 Row Impact:\n")
+                self._log(f"      Rows with non-zero values before: {rows_with_nonzero_before:,}\n")
+                self._log(f"      Rows with non-zero values after:  {rows_still_nonzero:,}\n")
+                self._log(f"      Rows now all-zero (will be removed later): {rows_with_all_zeros_after:,}\n\n")
+
+                if sample_stats:
+                    self._log(f"   📝 Per-Sample Breakdown:\n")
+                    for stat in sample_stats[:10]:
+                        self._log(f"{stat}\n")
+                    if len(sample_stats) > 10:
+                        self._log(f"      ... and {len(sample_stats) - 10} more samples\n")
             
             self._log(f"\n✅ Grade filtering complete!\n\n")
             
@@ -3516,6 +3576,8 @@ class CleanColumnDataCleaner:
                           pos_class_df: Optional[pd.DataFrame] = None,
                           neg_class_df: Optional[pd.DataFrame] = None,
                           sample_mapping: Optional[Dict[str, str]] = None,
+                          pos_sample_mapping: Optional[Dict[str, str]] = None,
+                          neg_sample_mapping: Optional[Dict[str, str]] = None,
                           column_clean_patterns: Optional[List[str]] = None):
         """Save cleaned lipid (and class) data to an Excel file.
         
@@ -3532,6 +3594,10 @@ class CleanColumnDataCleaner:
         self._log(f"   🔍 DEBUG - SAVE FUNCTION PARAMETERS:\n")
         self._log(f"      sample_mapping type: {type(sample_mapping)}\n")
         self._log(f"      sample_mapping value: {sample_mapping}\n")
+        self._log(f"      pos_sample_mapping type: {type(pos_sample_mapping)}\n")
+        self._log(f"      pos_sample_mapping value: {pos_sample_mapping}\n")
+        self._log(f"      neg_sample_mapping type: {type(neg_sample_mapping)}\n")
+        self._log(f"      neg_sample_mapping value: {neg_sample_mapping}\n")
         self._log(f"      column_clean_patterns: {column_clean_patterns}\n")
 
         # Create output directory if it doesn't exist
@@ -3559,13 +3625,37 @@ class CleanColumnDataCleaner:
         self._log(f"   DEBUG: sample_mapping value: {sample_mapping}\n")
         self._log(f"   DEBUG: column_clean_patterns: {column_clean_patterns}\n")
         
-        if sample_mapping or column_clean_patterns:
+        if sample_mapping or pos_sample_mapping or neg_sample_mapping or column_clean_patterns:
             self._log(f"\n   ✅ At least one transformation is enabled\n")
             if sample_mapping:
                 self._log(f"   🔄 FILE ID MAPPING ENABLED: {len(sample_mapping)} replacements\n")
                 self._log(f"   🔄 Full mapping dictionary:\n")
                 for data_id, file_name in sample_mapping.items():
                     self._log(f"      {data_id} : {file_name}\n")
+
+                # Detect one-to-many collisions in mapping values (different DataIDs -> same sample name)
+                value_to_keys = {}
+                for data_id, mapped_name in sample_mapping.items():
+                    value_to_keys.setdefault(str(mapped_name), []).append(str(data_id))
+                mapping_collisions = {
+                    mapped_name: data_ids
+                    for mapped_name, data_ids in value_to_keys.items()
+                    if len(data_ids) > 1
+                }
+                if mapping_collisions:
+                    self._log("   ❌ FILE ID discrepancy detected: duplicate mapped sample names in File ID mapping\n")
+                    for mapped_name, data_ids in list(mapping_collisions.items())[:10]:
+                        self._log(f"      • {mapped_name} <= {', '.join(data_ids)}\n")
+                    if len(mapping_collisions) > 10:
+                        self._log(f"      ... and {len(mapping_collisions) - 10} more collisions\n")
+                    raise ValueError(
+                        "File ID discrepancy detected: multiple DataIDs map to the same sample name. "
+                        "Please ensure each DataID maps to a unique sample name in your File ID mapping file."
+                    )
+            elif pos_sample_mapping or neg_sample_mapping:
+                self._log("   🔄 FILE ID MAPPING ENABLED (separate mode):\n")
+                self._log(f"      Positive mapping entries: {len(pos_sample_mapping) if pos_sample_mapping else 0}\n")
+                self._log(f"      Negative mapping entries: {len(neg_sample_mapping) if neg_sample_mapping else 0}\n")
             else:
                 self._log(f"   ⚠️ NO FILE ID MAPPING (sample_mapping is None or empty)\n")
             
@@ -3574,7 +3664,7 @@ class CleanColumnDataCleaner:
             else:
                 self._log(f"   ⚠️ NO COLUMN CLEANING (patterns is None or empty)\n")
             
-            def apply_mapping_and_cleaning_to_df(df):
+            def apply_mapping_and_cleaning_to_df(df, current_mapping=None):
                 """
                 Apply column name transformations with EXACT word matching:
                 1. FIRST: Apply column cleaning patterns to extract pure DataID
@@ -3587,12 +3677,25 @@ class CleanColumnDataCleaner:
                 if df is None or df.empty:
                     self._log(f"   ⏭️ Skipping empty/None dataframe\n")
                     return df
+
+                active_mapping = current_mapping if current_mapping is not None else sample_mapping
                 
                 self._log(f"\n   🔍 Processing dataframe with {len(df.columns)} columns:\n")
                 self._log(f"      Sample columns: {list(df.columns)[:5]}...\n")
                 
                 rename_map = {}
                 unmatched_columns = []
+
+                def clean_name(raw_name):
+                    """Apply user-provided text cleanup patterns to a column/sample name."""
+                    name = str(raw_name)
+                    if column_clean_patterns:
+                        for pattern in column_clean_patterns:
+                            if pattern:
+                                name = name.replace(pattern, '')
+                    name = ' '.join(name.split()).strip()
+                    name = name.strip('_').strip()
+                    return name
                 
                 for col in df.columns:
                     col_str = str(col)
@@ -3600,22 +3703,21 @@ class CleanColumnDataCleaner:
                     
                     # STEP 1: Apply column cleaning patterns FIRST to extract pure DataID
                     if column_clean_patterns:
-                        for pattern in column_clean_patterns:
-                            if pattern:  # Skip empty patterns
-                                new_name = new_name.replace(pattern, '')
-                        # Clean up extra spaces/underscores after pattern removal
-                        new_name = ' '.join(new_name.split()).strip()
-                        new_name = new_name.strip('_').strip()
+                        new_name = clean_name(new_name)
                     
-                    # STEP 2: Now check if cleaned name EXACTLY matches a DataID in sample_mapping
-                    if sample_mapping and new_name in sample_mapping:
-                        file_name = sample_mapping[new_name]
-                        self._log(f"      ✅ EXACT MATCH: {col_str} → (clean) → {new_name} → (map) → {file_name}\n")
-                        rename_map[col] = file_name
+                    # STEP 2: Now check if cleaned name EXACTLY matches a DataID in active mapping
+                    if active_mapping and new_name in active_mapping:
+                        file_name = active_mapping[new_name]
+                        final_name = clean_name(file_name) if column_clean_patterns else str(file_name)
+                        self._log(
+                            f"      ✅ EXACT MATCH: {col_str} → (clean) → {new_name} "
+                            f"→ (map) → {file_name} → (final) → {final_name}\n"
+                        )
+                        rename_map[col] = final_name
                     elif column_clean_patterns and new_name != col_str:
                         # Column was cleaned but no mapping match found
                         self._log(f"      🧹 CLEANED ONLY: {col_str} → {new_name} (no mapping match)\n")
-                        if sample_mapping:
+                        if active_mapping:
                             # Warn that this cleaned column didn't match any mapping
                             unmatched_columns.append((col_str, new_name))
                         rename_map[col] = new_name
@@ -3636,13 +3738,31 @@ class CleanColumnDataCleaner:
                     df = df.rename(columns=rename_map)
                 else:
                     self._log(f"   ℹ️ NO COLUMN RENAMES (no patterns applied or matches found)\n")
+
+                # Validate transformed names to avoid ambiguous duplicate sample columns.
+                # Duplicates are usually caused by mismatches between file IDs and sample names.
+                str_cols = [str(c) for c in df.columns]
+                name_counts = Counter(str_cols)
+                duplicate_names = [name for name, count in name_counts.items() if count > 1]
+                if duplicate_names:
+                    self._log("\n      ❌ File ID / sample name discrepancy detected after column transformation:\n")
+                    for dup_name in duplicate_names[:10]:
+                        self._log(f"         • Duplicate sample name: {dup_name} (appears {name_counts[dup_name]} times)\n")
+                    if len(duplicate_names) > 10:
+                        self._log(f"         ... and {len(duplicate_names) - 10} more duplicate names\n")
+                    self._log("      💡 Check File ID mapping and column cleaning patterns so each sample name is unique.\n")
+                    raise ValueError(
+                        "File ID and sample name discrepancy detected: duplicate sample names were produced "
+                        "after applying mapping/cleaning. Please verify your File ID mapping sheet and "
+                        "column-cleaning patterns."
+                    )
                 return df
             
-            pos_df = apply_mapping_and_cleaning_to_df(pos_df)
-            neg_df = apply_mapping_and_cleaning_to_df(neg_df)
-            pos_class_df = apply_mapping_and_cleaning_to_df(pos_class_df)
-            neg_class_df = apply_mapping_and_cleaning_to_df(neg_class_df)
-            combined_df = apply_mapping_and_cleaning_to_df(combined_df)
+            pos_df = apply_mapping_and_cleaning_to_df(pos_df, current_mapping=pos_sample_mapping)
+            neg_df = apply_mapping_and_cleaning_to_df(neg_df, current_mapping=neg_sample_mapping)
+            pos_class_df = apply_mapping_and_cleaning_to_df(pos_class_df, current_mapping=pos_sample_mapping)
+            neg_class_df = apply_mapping_and_cleaning_to_df(neg_class_df, current_mapping=neg_sample_mapping)
+            combined_df = apply_mapping_and_cleaning_to_df(combined_df, current_mapping=sample_mapping)
             
             self._log(f"   ✅ All column transformations complete\n")
 
@@ -3701,11 +3821,17 @@ class CleanColumnDataCleaner:
                 if col_name in out.columns:
                     continue
                 if col_name in dup_names:
-                    cols = [c for c in df.columns if c == col_name]
-                    # If any of the duplicates are numeric, sum numeric values across them
+                    # Selecting by duplicate label may return a DataFrame (not Series).
+                    selected = df.loc[:, col_name]
+                    if isinstance(selected, pd.Series):
+                        series_list = [selected]
+                    else:
+                        series_list = [selected.iloc[:, i] for i in range(selected.shape[1])]
+
+                    # If any of the duplicates are numeric, sum numeric values across them.
                     numeric_summed = None
-                    for c in cols:
-                        series = pd.to_numeric(df[c], errors='coerce')
+                    for series_raw in series_list:
+                        series = pd.to_numeric(series_raw, errors='coerce')
                         if numeric_summed is None:
                             numeric_summed = series.fillna(0)
                         else:
@@ -3713,7 +3839,7 @@ class CleanColumnDataCleaner:
                     if numeric_summed is not None:
                         out[col_name] = numeric_summed
                     else:
-                        out[col_name] = df[cols[0]]
+                        out[col_name] = series_list[0]
                 else:
                     out[col_name] = df[col_name]
             return out

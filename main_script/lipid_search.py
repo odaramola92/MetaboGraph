@@ -1,5 +1,13 @@
 """
-python lipid_search.py --input cleaned_lipids --feather lipidmap.feather --out matches.xlsx --ppm 10
+Simple exact-match search tool for lipidmap.feather using an input Excel (default: cleaned_lipids).
+- Prints input columns found and basic debug info from feather.
+- For each input row, tries exact matches in corresponding columns.
+- If EXACT_MASS is used, matches within ±ppm (default 10 ppm) and requires one other column to confirm.
+- If FORMULA is used, requires one other column (NAME or EXACT_MASS) to confirm.
+- Strings are compared case-sensitively after stripping whitespace (interpreted as "exact" for practical use).
+
+Usage:
+    python lipid_search.py --input cleaned_lipids --feather lipidmap.feather --out matches.xlsx --ppm 10
 """
 
 import argparse
@@ -33,12 +41,10 @@ def mass_within_ppm(m_input, m_candidate, ppm):
     try:
         m_input = float(m_input)
         m_candidate = float(m_candidate)
-        ppm = float(ppm)
-        if m_input == 0:
-            return False
-        return abs(m_candidate - m_input) <= (abs(m_input) * ppm / 1_000_000)
     except Exception:
         return False
+    tol = abs(m_input) * ppm / 1e6
+    return abs(m_input - m_candidate) <= tol
 
 def norm_str(x):
     if pd.isna(x):
@@ -526,12 +532,15 @@ def run_search(input_df: pd.DataFrame, df_feather: pd.DataFrame, ppm: float = 10
                         out[c] = None
                     rows_out.append(out)
 
+                    # Diagnostic debug: print what was tried for this row to help identify mapping/normalization issues
+                    try:
+                        print(f"[lipid_search DEBUG] No match for input row {i}: display='{display_lipid_shorthand(orig_row.get('ABBREVIATION') or orig_row.get('NAME') or '')}'")
+                        print(f"  Input columns available: {list(orig_row.index)}")
+                        print(f"  Feather columns available: {feather_cols[:10]}{'...' if len(feather_cols)>10 else ''}")
+                        print(f"  Tried patterns: {_ if _ is not None else '[]'}")
+                    except Exception:
+                        pass
             else:
-                try:
-                    orig_row = input_df.iloc[i]
-                    print(f"[lipid_search DEBUG] Matched input row {i}: display='{display_lipid_shorthand(orig_row.get('ABBREVIATION') or orig_row.get('NAME') or '')}', match_type='{match_type}', hits={len(matches)}")
-                except Exception:
-                    pass
                 for _, m in matches.iterrows():
                     out = {"matched": True, "match_type": match_type}
                     orig_row = input_df.iloc[i]
@@ -578,12 +587,13 @@ def run_search(input_df: pd.DataFrame, df_feather: pd.DataFrame, ppm: float = 10
                 for c in feather_cols:
                     out[c] = None
                 local_rows.append((i, out))
-            else:
+                # Diagnostic debug for parallel mode
                 try:
-                    orig_row = input_df.iloc[i]
-                    print(f"[lipid_search DEBUG] Matched (parallel) input row {i}: display='{display_lipid_shorthand(orig_row.get('ABBREVIATION') or orig_row.get('NAME') or '')}', match_type='{match_type}', hits={len(matches)}")
+                    print(f"[lipid_search DEBUG] No match (parallel) for input row {i}: display='{display_lipid_shorthand(orig_row.get('ABBREVIATION') or orig_row.get('NAME') or '')}'")
+                    print(f"  Tried patterns: {_ if _ is not None else '[]'}")
                 except Exception:
                     pass
+            else:
                 for _, m in matches.iterrows():
                     out = {"matched": True, "match_type": match_type}
                     orig_row = input_df.iloc[i]

@@ -476,7 +476,7 @@ def build_class_level_network_dataframe(
     return combined, mapping_df
 
 
-def wrap_pathway_name(name: str, max_chars: int = 45) -> str:
+def wrap_pathway_name(name: str, max_chars: int = 45, max_lines: int = None, break_token: str = '<br>') -> str:
     """
     Wrap long pathway names by inserting line breaks at word boundaries.
     
@@ -497,28 +497,56 @@ def wrap_pathway_name(name: str, max_chars: int = 45) -> str:
     
     words = name.split()
     lines = []
-    current_line = []
-    current_length = 0
-    
-    for word in words:
-        # Check if adding this word would exceed the limit
-        word_length = len(word)
-        separator_length = 1 if current_line else 0  # Space between words
-        
-        if current_length + separator_length + word_length > max_chars and current_line:
-            # Start a new line
-            lines.append(' '.join(current_line))
-            current_line = [word]
-            current_length = word_length
-        else:
+    remaining_words = words[:]
+
+    def _split_long_word(word: str, chunk_size: int):
+        if chunk_size <= 0:
+            return [word]
+        return [word[i:i + chunk_size] for i in range(0, len(word), chunk_size)]
+
+    while remaining_words:
+        if max_lines is not None and len(lines) >= max_lines - 1:
+            lines.append(' '.join(remaining_words))
+            break
+
+        current_line = []
+        current_length = 0
+
+        while remaining_words:
+            word = remaining_words[0]
+            if len(word) > max_chars:
+                chunks = _split_long_word(word, max_chars)
+                remaining_words.pop(0)
+                for chunk in reversed(chunks[1:]):
+                    remaining_words.insert(0, chunk)
+                word = chunks[0]
+            separator_length = 1 if current_line else 0
+            next_length = current_length + separator_length + len(word)
+
+            if current_line and next_length > max_chars:
+                break
+
             current_line.append(word)
-            current_length += separator_length + word_length
+            current_length = next_length
+            remaining_words.pop(0)
+
+        if current_line:
+            lines.append(' '.join(current_line))
+        else:
+            lines.append(remaining_words.pop(0))
+
+        if max_lines is not None and len(lines) >= max_lines and remaining_words:
+            overflow = ' '.join(remaining_words)
+            if len(lines[-1]) + len(overflow) + 1 > max_chars:
+                if max_chars > 3:
+                    lines[-1] = lines[-1][:max_chars - 3].rstrip() + '...'
+                else:
+                    lines[-1] = lines[-1][:max_chars]
+            else:
+                lines[-1] = (lines[-1] + ' ' + overflow).strip()
+            break
     
-    # Add the last line
-    if current_line:
-        lines.append(' '.join(current_line))
-    
-    return '<br>'.join(lines)
+    return break_token.join(lines)
 
 
 def import_data(file_path1, sheet_name1=None, 
@@ -4292,7 +4320,32 @@ def create_interactive_metabolite_pathway_plot_from_stats(df, pathway_stats,
     
     return fig
 
-def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
+def create_pathway_summary_plots(
+    metabolites,
+    pathways,
+    font_size_scale=1.0,
+    bargraph_pathway_max_chars=40,
+    bargraph_pathway_max_lines=3,
+    bargraph_title_font_size=22,
+    bargraph_axis_title_font_size=20,
+    bargraph_tick_font_size=15,
+    bargraph_pathway_label_font_size=20,
+    bargraph_width_px=1200,
+    bargraph_height_px=700,
+    bargraph_legend_title_font_size=14,
+    bargraph_legend_tick_font_size=12,
+    bargraph_legend_thickness=10,
+    bargraph_legend_length_percent=70,
+    chord_metabolite_max_chars=40,
+    chord_metabolite_max_lines=2,
+    chord_pathway_max_chars=40,
+    chord_pathway_max_lines=2,
+    chord_metabolite_font_size=12,
+    chord_pathway_font_size=12,
+    chord_width_inches=12,
+    chord_height_inches=12,
+    chord_keep_metabolite_case=False,
+):
     """Create individual bar plots and bubble plots for pathway analysis
     
     Parameters:
@@ -4303,6 +4356,49 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
         Pathway data
     font_size_scale : float, optional (default=1.0)
         Multiplier for all font sizes. Use 1.5 for 50% larger, 2.0 for 2x larger, etc.
+    bargraph_pathway_max_chars : int, optional (default=40)
+        Maximum characters per line for pathway labels in the bar graphs.
+    bargraph_pathway_max_lines : int, optional (default=3)
+        Maximum wrapped lines for pathway labels in the bar graphs.
+    bargraph_title_font_size : int, optional (default=22)
+        Title font size for enrichment bar graphs.
+    bargraph_axis_title_font_size : int, optional (default=20)
+        Axis-title font size for enrichment bar graphs.
+    bargraph_tick_font_size : int, optional (default=15)
+        Tick-label font size for x-axis values in enrichment bar graphs.
+    bargraph_pathway_label_font_size : int, optional (default=20)
+        Tick-label font size for pathway labels (y-axis) in enrichment bar graphs.
+    bargraph_width_px : int, optional (default=1200)
+        Minimum width for enrichment bar graph figures in pixels.
+    bargraph_height_px : int, optional (default=700)
+        Minimum height for enrichment bar graph figures in pixels.
+    bargraph_legend_title_font_size : int, optional (default=14)
+        Colorbar title font size for enrichment bar graphs.
+    bargraph_legend_tick_font_size : int, optional (default=12)
+        Colorbar tick font size for enrichment bar graphs.
+    bargraph_legend_thickness : int, optional (default=10)
+        Colorbar thickness for enrichment bar graphs.
+    bargraph_legend_length_percent : int, optional (default=70)
+        Colorbar length as a percent of axis height for enrichment bar graphs.
+    chord_metabolite_max_chars : int, optional (default=40)
+        Maximum characters per line for metabolite labels in the chord diagram.
+    chord_metabolite_max_lines : int, optional (default=2)
+        Maximum wrapped lines for metabolite labels in the chord diagram.
+    chord_pathway_max_chars : int, optional (default=40)
+        Maximum characters per line for pathway labels in the chord diagram.
+    chord_pathway_max_lines : int, optional (default=2)
+        Maximum wrapped lines for pathway labels in the chord diagram.
+    chord_metabolite_font_size : int, optional (default=12)
+        Font size for metabolite labels in the chord diagram.
+    chord_pathway_font_size : int, optional (default=12)
+        Font size for pathway labels in the chord diagram.
+    chord_width_inches : float, optional (default=12)
+        Chord diagram figure width in inches.
+    chord_height_inches : float, optional (default=12)
+        Chord diagram figure height in inches.
+    chord_keep_metabolite_case : bool, optional (default=False)
+        If True, preserve original metabolite/compound label casing in the chord diagram.
+        If False, convert metabolite/compound labels to sentence case.
     """
     
     # Extract neutral_z_band from metadata (use 0.5 as default if not found)
@@ -4396,7 +4492,7 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     
     fig1.add_trace(
         go.Bar(
-            x=[wrap_pathway_name(p['name']) for p in pathway_list],
+            x=[wrap_pathway_name(p['name'], max_chars=bargraph_pathway_max_chars, max_lines=bargraph_pathway_max_lines) for p in pathway_list],
             y=[p['z_score'] for p in pathway_list],
             orientation='v',
             marker=dict(color=pathway_colors),
@@ -4453,7 +4549,7 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     fig2 = go.Figure()
 
     # Ensure colors are mapped to the exact bar order
-    fig2_names = [wrap_pathway_name(p['name']) for p in pathway_list]
+    fig2_names = [wrap_pathway_name(p['name'], max_chars=bargraph_pathway_max_chars, max_lines=bargraph_pathway_max_lines) for p in pathway_list]
     fig2_values = [p['neg_log_pvalue'] for p in pathway_list]
     fig2_colors = [get_color_by_zscore(p['z_score'], p['status'], neutral_z_band) for p in pathway_list]
 
@@ -4522,7 +4618,7 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     fig3 = go.Figure()
 
     # Ensure colors are mapped to the exact bar order
-    fig3_names = [wrap_pathway_name(p['name']) for p in pathway_list]
+    fig3_names = [wrap_pathway_name(p['name'], max_chars=bargraph_pathway_max_chars, max_lines=bargraph_pathway_max_lines) for p in pathway_list]
     fig3_values = [p['neg_log_pvalue'] for p in pathway_list]
     fig3_colors = [get_color_by_zscore(p['z_score'], p['status'], neutral_z_band) for p in pathway_list]
 
@@ -4735,10 +4831,15 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     enrichment_bar_gap = 0.32
     enrichment_bar_width = 0.82
 
+    def _count_wrapped_lines(label):
+        """Count display lines in labels that may use either <br> or \n wrapping."""
+        normalized = str(label).replace('<br>', '\n')
+        return max(1, len([ln for ln in normalized.split('\n') if ln != '']))
+
     def _compute_enrichment_height(label_list):
         total = 260
         for label in label_list:
-            lines = label.count('<br>') + 1
+            lines = _count_wrapped_lines(label)
             total += enrichment_row_base_height + enrichment_extra_per_line * (lines - 1)
         return max(650, min(1700, total))
 
@@ -4757,7 +4858,15 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     # Get counts (number of SIGNIFICANT metabolites in each pathway)
     # CRITICAL: Use 'hits' (significant only) not 'metabolites' (all measured)
     counts = [len(p.get('hits', p.get('metabolites', []))) for p in top_pathways]
-    names = [wrap_pathway_name(p['name']) for p in top_pathways]
+    names = [
+        wrap_pathway_name(
+            p['name'],
+            max_chars=bargraph_pathway_max_chars,
+            max_lines=bargraph_pathway_max_lines,
+            break_token='<br>',
+        )
+        for p in top_pathways
+    ]
     neg_log_pvals = [p['neg_log_pvalue'] for p in top_pathways]
     
     # Create color gradient from deep orange to gray based on -log p-values
@@ -4793,11 +4902,10 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     # Calculate dynamic height and left margin based on longest pathway name
     enrichment_height = _compute_enrichment_height(names)
     
-    # Calculate left margin dynamically based on longest LINE (not total characters)
-    # Split by <br> tags and find the longest line
+    # Calculate left margin dynamically based on longest display line.
     max_line_length = 20
     for name in names:
-        lines = name.split('<br>')
+        lines = str(name).replace('<br>', '\n').split('\n')
         for line in lines:
             max_line_length = max(max_line_length, len(line))
     # Average character width in pixels at font size 11 is approximately 7 pixels
@@ -4829,6 +4937,7 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     # Add a dummy scatter trace for the color bar
     max_neg_log_pval = max(neg_log_pvals) if neg_log_pvals else 1.0
     min_neg_log_pval = 0  # Always start from 0
+    bargraph_legend_len = max(0.3, min(1.0, float(bargraph_legend_length_percent) / 100.0))
     
     fig5.add_trace(
         go.Scatter(
@@ -4845,13 +4954,13 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
                 colorbar=dict(
                     title=dict(
                         text="-log10(p-value)",
-                        font=dict(size=14, weight='bold')
+                        font=dict(size=int(bargraph_legend_title_font_size * font_size_scale), weight='bold')
                     ),
-                    thickness=10,
-                    len=0.7,
+                    thickness=max(6, int(bargraph_legend_thickness)),
+                    len=bargraph_legend_len,
                     x=1.02,
                     xanchor='left',
-                    tickfont=dict(size=12, weight='bold'),
+                    tickfont=dict(size=int(bargraph_legend_tick_font_size * font_size_scale), weight='bold'),
                     tickformat='.1f'
                 ),
                 showscale=True
@@ -4866,30 +4975,31 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
             'text': "Pathway Enrichment Analysis (Top 20)",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': int(22 * font_size_scale), 'weight': 'bold'}
+            'font': {'size': int(bargraph_title_font_size * font_size_scale), 'weight': 'bold'}
         },
         xaxis=dict(
-            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(20 * font_size_scale))),
+            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(bargraph_axis_title_font_size * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=int(15 * font_size_scale)),
+            tickfont=dict(weight='bold', size=int(bargraph_tick_font_size * font_size_scale)),
             tickformat='d',
             range=[0, max(counts, default=1) * 1.1] if counts else [0, 1]
         ),
         yaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=int(20 * font_size_scale))),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(bargraph_axis_title_font_size * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=int(max(10, font_size_y + 2) * font_size_scale)),
+            tickfont=dict(weight='bold', size=int(max(6, bargraph_pathway_label_font_size) * font_size_scale)),
+            automargin=True,
             categoryorder='array',
             categoryarray=names
         ),
         plot_bgcolor='white',
         paper_bgcolor='white',
-        width=max(1200, left_margin + 600),
-        height=enrichment_height,
+        width=max(int(bargraph_width_px), left_margin + 600),
+        height=max(int(bargraph_height_px), enrichment_height),
         margin=dict(l=left_margin, r=150, t=80, b=60),
         bargap=enrichment_bar_gap
     )
@@ -4903,7 +5013,16 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     # Get counts (number of SIGNIFICANT metabolites in each pathway)
     # CRITICAL: Use 'hits' (significant only) not 'metabolites' (all measured)
     selected_counts = [len(p.get('hits', p.get('metabolites', []))) for p in selected_sorted]
-    selected_names = [wrap_pathway_name(p['name']) for p in selected_sorted]
+    # Keep selected pathways wrapped the same way as Top 20 for consistent splitting.
+    selected_names = [
+        wrap_pathway_name(
+            p['name'],
+            max_chars=bargraph_pathway_max_chars,
+            max_lines=bargraph_pathway_max_lines,
+            break_token='<br>',
+        )
+        for p in selected_sorted
+    ]
     selected_neg_log_pvals = [p['neg_log_pvalue'] for p in selected_sorted]
     
     # Create color gradient from deep orange to gray based on -log p-values
@@ -4928,11 +5047,11 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
     # Calculate dynamic height and left margin based on longest pathway name
     selected_enrichment_height = _compute_enrichment_height(selected_names)
     
-    # Calculate left margin dynamically based on longest LINE (not total characters)
-    # Split by <br> tags and find the longest line
+    # Calculate left margin dynamically based on longest display line
+    # Handle both <br> and \n line break styles.
     selected_max_line_length = 20
     for name in selected_names:
-        lines = name.split('<br>')
+        lines = str(name).replace('<br>', '\n').split('\n')
         for line in lines:
             selected_max_line_length = max(selected_max_line_length, len(line))
     # Average character width in pixels at font size 11 is approximately 7 pixels
@@ -4980,13 +5099,13 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
                 colorbar=dict(
                     title=dict(
                         text="-log10(p-value)",
-                        font=dict(size=int(14 * font_size_scale), weight='bold')
+                        font=dict(size=int(bargraph_legend_title_font_size * font_size_scale), weight='bold')
                     ),
-                    thickness=10,
-                    len=0.7,
+                    thickness=max(6, int(bargraph_legend_thickness)),
+                    len=bargraph_legend_len,
                     x=1.02,
                     xanchor='left',
-                    tickfont=dict(size=int(12 * font_size_scale), weight='bold'),
+                    tickfont=dict(size=int(bargraph_legend_tick_font_size * font_size_scale), weight='bold'),
                     tickformat='.1f'
                 ),
                 showscale=True
@@ -5001,30 +5120,31 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
             'text': "Pathway Enrichment Analysis (Selected Pathways)",
             'x': 0.5,
             'xanchor': 'center',
-            'font': {'size': int(22 * font_size_scale), 'weight': 'bold'}
+            'font': {'size': int(bargraph_title_font_size * font_size_scale), 'weight': 'bold'}
         },
         xaxis=dict(
-            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(20 * font_size_scale))),
+            title=dict(text="Metabolite Count", font=dict(weight='bold', size=int(bargraph_axis_title_font_size * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=int(15 * font_size_scale)),
+            tickfont=dict(weight='bold', size=int(bargraph_tick_font_size * font_size_scale)),
             tickformat='d',
             range=[0, max(selected_counts, default=1) * 1.1] if selected_counts else [0, 1]
         ),
         yaxis=dict(
-            title=dict(text="Pathways", font=dict(weight='bold', size=int(20 * font_size_scale))),
+            title=dict(text="Pathways", font=dict(weight='bold', size=int(bargraph_axis_title_font_size * font_size_scale))),
             showline=True,
             linewidth=2,
             linecolor='black',
-            tickfont=dict(weight='bold', size=int(max(10, selected_font_size_y + 2) * font_size_scale)),
+            tickfont=dict(weight='bold', size=int(max(6, bargraph_pathway_label_font_size) * font_size_scale)),
+            automargin=True,
             categoryorder='array',
             categoryarray=selected_names
         ),
         plot_bgcolor='white',
         paper_bgcolor='white',
-        width=max(1200, selected_left_margin + 600),
-        height=selected_enrichment_height,
+        width=max(int(bargraph_width_px), selected_left_margin + 600),
+        height=max(int(bargraph_height_px), selected_enrichment_height),
         margin=dict(l=selected_left_margin, r=150, t=80, b=60),
         bargap=enrichment_bar_gap
     )
@@ -5115,7 +5235,11 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
                 sectors[met] = len([e for e in chord_edges if e['metabolite'] == met])
             
             # Initialize circos plot with sectors
-            circos = pycirclize.Circos(sectors, space=5)
+            # pycirclize treats `space` as the gap between every sector.
+            # With many sectors, a fixed gap can exceed the 360-degree circle and fail.
+            num_sectors = max(1, len(sectors))
+            safe_sector_space = min(5, max(0, 360 // num_sectors))
+            circos = pycirclize.Circos(sectors, space=safe_sector_space)
             
             # Add colored arc tracks and labels for all sectors
             for sector in circos.sectors:
@@ -5164,20 +5288,22 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
                 
                 # Second: Add text label with proper rotation (matching chord_diagram.py exactly)
                 label_text = sector.name
-                if True:  # uppercase_labels always True for consistency
+                
+                # Apply formatting: optional sentence case for metabolites, uppercase for pathways
+                if sector.name in metabolite_log2fc_map:
+                    # Metabolite: preserve source case when requested, otherwise sentence case.
+                    if not chord_keep_metabolite_case:
+                        label_text = label_text[0].upper() + label_text[1:].lower() if len(label_text) > 0 else label_text
+                else:
+                    # Pathway: keep in all caps
                     label_text = label_text.upper()
 
-                LABEL_WRAP = 16        # if label longer than this, attempt two-line wrap
-                LABEL_BREAK = 25       # break single long words at this length
-
-                if len(label_text) > LABEL_WRAP:
-                    parts = label_text.split()
-                    if len(parts) > 1:
-                        mid = len(parts) // 2
-                        label_text = " ".join(parts[:mid]) + "\n" + " ".join(parts[mid:])
-                    else:
-                        # Break long single word across lines instead of truncating
-                        label_text = label_text[:LABEL_BREAK] + "\n" + label_text[LABEL_BREAK:]
+                label_text = wrap_pathway_name(
+                    label_text,
+                    max_chars=chord_metabolite_max_chars if sector.name in metabolite_log2fc_map else chord_pathway_max_chars,
+                    max_lines=chord_metabolite_max_lines if sector.name in metabolite_log2fc_map else chord_pathway_max_lines,
+                    break_token="\n",
+                )
                 
                 # Calculate proper text rotation and alignment based on sector position
                 try:
@@ -5208,12 +5334,15 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
 
                     # Use consistent label radius for all positions
                     r_used = 112
+                    label_font_size = (
+                        chord_metabolite_font_size if sector.name in metabolite_log2fc_map else chord_pathway_font_size
+                    )
                     
                     # Add label at sector position with proper rotation
                     sector.text(
                         label_text,
                         r=r_used,
-                        size=int(12 * font_size_scale),
+                        size=int(max(6, label_font_size) * font_size_scale),
                         weight='bold',
                         rotation=rotation,
                         ha=ha,
@@ -5258,7 +5387,9 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
             num_sectors = len(sectors)
             # Base size 8 inches, add 0.1 inch per sector (up to max 12 inches)
             dynamic_size = min(12, max(8, 8 + (num_sectors - 20) * 0.1))
-            fig7.set_size_inches(dynamic_size, dynamic_size)
+            target_w = max(float(chord_width_inches), dynamic_size) if chord_width_inches else dynamic_size
+            target_h = max(float(chord_height_inches), dynamic_size) if chord_height_inches else dynamic_size
+            fig7.set_size_inches(target_w, target_h)
             
             print("[CHORD DIAGRAM] Successfully created\n")
             
@@ -5285,8 +5416,8 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
                 yaxis=dict(visible=False),
                 plot_bgcolor='white',
                 paper_bgcolor='white',
-                width=800,
-                height=600
+                width=int(max(600, float(chord_width_inches) * 100)),
+                height=int(max(450, float(chord_height_inches) * 100))
             )
             print("[CHORD DIAGRAM] No edges - placeholder created\n")
             print("[CHORD DIAGRAM] No edges - placeholder created\n")
@@ -5308,8 +5439,8 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
             yaxis=dict(visible=False),
             plot_bgcolor='white',
             paper_bgcolor='white',
-            width=800,
-            height=600
+            width=int(max(600, float(chord_width_inches) * 100)),
+            height=int(max(450, float(chord_height_inches) * 100))
         )
     except Exception as e:
         # Catch any other errors and show warning
@@ -5328,8 +5459,8 @@ def create_pathway_summary_plots(metabolites, pathways, font_size_scale=1.0):
             yaxis=dict(visible=False),
             plot_bgcolor='white',
             paper_bgcolor='white',
-            width=800,
-            height=600
+            width=int(max(600, float(chord_width_inches) * 100)),
+            height=int(max(450, float(chord_height_inches) * 100))
         )
     
     return fig1, fig2, fig3, fig4, fig5, fig6, fig7, fig_legend
