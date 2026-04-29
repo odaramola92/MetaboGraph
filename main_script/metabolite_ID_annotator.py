@@ -716,14 +716,20 @@ class MetaboliteIDAnnotator:
         """Run lipid ID annotation using offline lipid_search and enrich via PubChem, KEGG, and HMDB."""
         from main_script.lipid_search import run_search as lipid_run_search  # local import to avoid hard dep in metabolite mode
 
-        # PRIORITY 1: Use cleaned_metabolites_df if available (Combined sheet with LipidID, Class, Main_Class)
-        # PRIORITY 2: Load from file
-        # PRIORITY 3: Use pos_df only if nothing else available
+        # PRIORITY 1: Use explicit dataframe override when provided
+        # PRIORITY 2: Use cleaned_metabolites_df from memory (unless force_file_input=True)
+        # PRIORITY 3: Load from file
+        # PRIORITY 4: Use pos_df only if nothing else available
         
         input_df = None
         polarity_sheets = {}
         
-        if self.cleaned_metabolites_df is not None and isinstance(self.cleaned_metabolites_df, pd.DataFrame) and not self.cleaned_metabolites_df.empty:
+        if self.input_df_override is not None and isinstance(self.input_df_override, pd.DataFrame) and not self.input_df_override.empty:
+            logger.info(f"[LIPID MODE] Using user-assigned input dataframe override")
+            input_df = self.input_df_override.copy()
+            logger.info(f"[LIPID MODE] Override dataframe: {len(input_df)} rows, columns: {list(input_df.columns)}")
+
+        elif self.cleaned_metabolites_df is not None and isinstance(self.cleaned_metabolites_df, pd.DataFrame) and not self.cleaned_metabolites_df.empty and not self.force_file_input:
             logger.info(f"[LIPID MODE] Using pre-loaded COMBINED dataframe from memory (lipid_combined_df)")
             input_df = self.cleaned_metabolites_df.copy()
             logger.info(f"[LIPID MODE] COMBINED sheet: {len(input_df)} rows, columns: {list(input_df.columns)}")
@@ -741,6 +747,8 @@ class MetaboliteIDAnnotator:
                 logger.info(f"[LIPID MODE] Will map annotated IDs back to {len(polarity_sheets)} polarity sheet(s)")
         
         elif self.input_file and os.path.exists(self.input_file):
+            if self.force_file_input:
+                logger.info(f"[LIPID MODE] Force file input enabled - bypassing pre-loaded memory dataframe")
             logger.info(f"[LIPID MODE] Loading input file: {self.input_file}")
             try:
                 # Load Excel file and check sheets
