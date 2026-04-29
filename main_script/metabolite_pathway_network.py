@@ -50,6 +50,28 @@ _DISEASE_PATHWAY_CORRECTIONS = {
     "tyrosinemia,transient;of the newborn": "Transient Tyrosinemia of the Newborn",
 }
 
+# Pathway-context keywords that should override disease keywords when the phrase
+# is clearly a biological pathway rather than a disease label.
+_PATHWAY_OVERRIDE_KEYWORDS = [
+    "metabolism",
+    "metabolic",
+    "biosynthesis",
+    "synthesis",
+    "degradation",
+    "catabolism",
+    "anabolism",
+    "transport",
+    "cycle",
+    "pathway",
+    "signaling",
+    "oxidation",
+    "reduction",
+    "homeostasis",
+    "processing",
+    "uptake",
+    "turnover",
+]
+
 # ============================================================================
 # CENTRALIZED PATHWAY FILTERING ARCHITECTURE
 # ============================================================================
@@ -82,9 +104,19 @@ def normalize_disease_pathway_name(pathway_name: str) -> str:
         return _DISEASE_PATHWAY_CORRECTIONS[pathway_lower]
     return pathway_name
 
+def is_pathway_overriding_disease(pathway_name: str) -> bool:
+    """Return True when pathway-context keywords should override disease matching."""
+    pathway_lower = pathway_name.lower()
+    return any(keyword in pathway_lower for keyword in _PATHWAY_OVERRIDE_KEYWORDS)
+
 def is_disease_pathway_global(pathway_name):
     """Check if pathway should be treated as a disease (suffix match or keyword match)"""
     pathway_lower = pathway_name.lower()
+
+    # PRIORITY 0: If the name is clearly a pathway phrase, keep it as a pathway
+    # even if it contains disease-related words like "cancer".
+    if is_pathway_overriding_disease(pathway_name):
+        return False
     
     # PRIORITY 1: Check for explicit disease pathways first (before any exclusions)
     # These are definitive disease pathways that should ALWAYS be classified as diseases
@@ -118,7 +150,7 @@ def is_disease_pathway_global(pathway_name):
     
     # PRIORITY 4: Check remaining disease keywords
     disease_secondary_keywords = [
-        "deficiency", "newborn", "type", "transient", "diabetic" "copy number variation"
+        "deficiency", "newborn", "type", "transient", "diabetic", "copy number variation"
     ]
     for keyword in disease_secondary_keywords:
         if keyword in pathway_lower:
@@ -281,7 +313,7 @@ def normalize_pathway_name_global(pathway_name):
 
 def build_class_level_network_dataframe(
     df: pd.DataFrame,
-    class_col: str = 'Class_name',
+    class_col: str = 'Main_Class',
     compress_classes: bool = True,
     name_candidates=None,
     pathway_col_candidates=None,
@@ -293,7 +325,7 @@ def build_class_level_network_dataframe(
     df : pandas.DataFrame
         Annotated metabolite dataframe already normalized by the GUI.
     class_col : str
-        Column containing the lipid class display name (default 'Class_name').
+        Column containing the lipid class display name (default 'Main_Class').
     compress_classes : bool
         Whether class compression is requested. When False, the dataframe is
         returned untouched and the mapping table is ``None``.
@@ -316,7 +348,11 @@ def build_class_level_network_dataframe(
         return df, None
 
     if class_col not in df.columns:
-        return df, None
+        legacy_class_col = 'Main_Class'
+        if legacy_class_col in df.columns:
+            class_col = legacy_class_col
+        else:
+            return df, None
 
     if name_candidates is None:
         name_candidates = [
@@ -3883,7 +3919,7 @@ def create_interactive_metabolite_pathway_plot_from_stats(df, pathway_stats,
     disease_data : pandas.DataFrame, optional
         DataFrame containing disease data with columns: Disease, Associated_Metabolites, # Metabolites
     compress_by_class : bool, default=True
-        If True and Class_name column exists, compress lipids by class (show one node per class)
+        If True and Main_Class column exists, compress lipids by class (show one node per class)
         If False, show all individual features
     """
     

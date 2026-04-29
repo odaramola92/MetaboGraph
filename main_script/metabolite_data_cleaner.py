@@ -490,6 +490,7 @@ class CleanColumnDataCleaner:
                     'BioCyc Pathways': 'BioCyc Pathways',
                     'Formula': 'Formula',
                     'Class': 'Class',
+                    'Main_Class': 'Main_Class',
                     'Super Class': 'Super_Class'
                 }
                 
@@ -1953,8 +1954,8 @@ class CleanColumnDataCleaner:
                 self._log(f"   ⚠️ Could not build combined lipid sheet: {e}\n")
                 combined_lipids = None
 
-            # Step 9: Add Class_name annotation from lipid_class_annotation.txt
-            self._log(f"\n🏷️  Adding lipid class name annotations...\n")
+            # Step 9: Add Main_Class/Category/Sub_Class annotation from lipid_class_annotation.txt
+            self._log(f"\n🏷️  Adding lipid class annotations...\n")
             annotation_df = self._load_lipid_class_annotation()
             
             # Apply annotation to all dataframes that have a Class column
@@ -1969,7 +1970,7 @@ class CleanColumnDataCleaner:
             if neg_class_df is not None:
                 neg_class_df = self._annotate_lipid_class_names(neg_class_df, annotation_df)
             
-            # Step 10: Reorder columns to place Class_name after Class
+            # Step 10: Reorder columns to place Main_Class/Category/Sub_Class after Class
             self._log(f"\n📋 Reordering columns...\n")
             if pos_cleaned is not None:
                 pos_cleaned = self._reorder_lipid_columns(pos_cleaned)
@@ -2077,7 +2078,7 @@ class CleanColumnDataCleaner:
         Load lipid class annotation database from lipid_class_annotation.txt
         
         Returns:
-            DataFrame with Short_Annotation and Class columns, or None if file not found
+            DataFrame with Short_Annotation, Category, Class, and Sub_class columns, or None if file not found
         """
         try:
             # Try to find the annotation file - check multiple locations for both development and PyInstaller
@@ -2099,10 +2100,10 @@ class CleanColumnDataCleaner:
                     os.path.join(exe_dir, 'lipid_class_annotation.txt'),  # Same dir as exe
                 ])
             
-            # Standard development/runtime paths (works for both Python script and PyInstaller fallback)
+            # Standard development/runtime paths (prefer the main_script copy as the canonical source)
             possible_paths.extend([
-                os.path.join(base_dir, '..', 'Databases', 'lipid_class_annotation.txt'),  # ../Databases/ folder (MAIN LOCATION)
                 os.path.join(base_dir, 'lipid_class_annotation.txt'),  # main_script/ folder (same as this file)
+                os.path.join(base_dir, '..', 'Databases', 'lipid_class_annotation.txt'),  # ../Databases/ folder
                 os.path.join(base_dir, '..', 'lipid_class_annotation.txt'),  # Project root
                 os.path.join(base_dir, 'Databases', 'lipid_class_annotation.txt'),  # main_script/Databases subfolder
             ])
@@ -2122,17 +2123,23 @@ class CleanColumnDataCleaner:
             annotation_df = pd.read_csv(annotation_file, sep='\t')
             
             # Check if required columns exist
-            required_cols = ['Short_Annotation', 'Class']
+            required_cols = ['Short_Annotation', 'Category', 'Class', 'Sub_class']
             if not all(col in annotation_df.columns for col in required_cols):
                 self._log(f"   ⚠️  Warning: Annotation file missing required columns: {required_cols}\n")
                 return None
             
-            # Keep only the columns we need
+            # Keep only the columns we need and standardize names for downstream use
             annotation_df = annotation_df[required_cols].copy()
+            annotation_df = annotation_df.rename(columns={
+                'Class': 'Main_Class',
+                'Sub_class': 'Sub_Class'
+            })
             
             # Strip whitespace from Short_Annotation column to prevent matching issues
             annotation_df['Short_Annotation'] = annotation_df['Short_Annotation'].astype(str).str.strip()
-            annotation_df['Class'] = annotation_df['Class'].astype(str).str.strip()
+            annotation_df['Category'] = annotation_df['Category'].astype(str).str.strip()
+            annotation_df['Main_Class'] = annotation_df['Main_Class'].astype(str).str.strip()
+            annotation_df['Sub_Class'] = annotation_df['Sub_Class'].astype(str).str.strip()
             
             # Remove duplicates, keeping first occurrence
             annotation_df = annotation_df.drop_duplicates(subset=['Short_Annotation'], keep='first')
@@ -2147,44 +2154,50 @@ class CleanColumnDataCleaner:
     
     def _annotate_lipid_class_names(self, df: pd.DataFrame, annotation_df: Optional[pd.DataFrame]) -> pd.DataFrame:
         """
-        Add Class_name column to lipid dataframe by mapping Class to annotation database
+        Add Main_Class/Category/Sub_Class columns to lipid dataframe by mapping Class to annotation database
         
         Args:
             df: Lipid DataFrame with 'Class' column
-            annotation_df: Annotation DataFrame with 'Short_Annotation' and 'Class' columns
+            annotation_df: Annotation DataFrame with 'Short_Annotation', 'Category', 'Main_Class', and 'Sub_Class' columns
             
         Returns:
-            DataFrame with added 'Class_name' column
+            DataFrame with added taxonomy columns
         """
         if df is None or df.empty:
             return df
         
         if 'Class' not in df.columns:
-            self._log(f"   ⚠️  Warning: 'Class' column not found, cannot add Class_name\n")
+            self._log(f"   ⚠️  Warning: 'Class' column not found, cannot add lipid taxonomy columns\n")
             return df
         
-        # If no annotation database, add Class_name as NA
+        # If no annotation database, add taxonomy columns as NA
         if annotation_df is None or annotation_df.empty:
-            df['Class_name'] = 'NA'
+            df['Main_Class'] = 'NA'
+            df['Category'] = 'NA'
+            df['Sub_Class'] = 'NA'
             return df
         
         # Strip whitespace from Class column in the lipid data to match annotation database
         df_class_stripped = df['Class'].astype(str).str.strip()
         
-        # Create a mapping dictionary: Short_Annotation -> Class
-        class_name_map = dict(zip(annotation_df['Short_Annotation'], annotation_df['Class']))
+        # Create mapping dictionaries from the canonical main-script annotation file
+        main_class_map = dict(zip(annotation_df['Short_Annotation'], annotation_df['Main_Class']))
+        category_map = dict(zip(annotation_df['Short_Annotation'], annotation_df['Category']))
+        sub_class_map = dict(zip(annotation_df['Short_Annotation'], annotation_df['Sub_Class']))
         
-        # Map the stripped Class column to Class_name, filling unmatched with 'NA'
-        df['Class_name'] = df_class_stripped.map(class_name_map).fillna('NA')
+        # Map the stripped Class column to taxonomy columns, filling unmatched with 'NA'
+        df['Main_Class'] = df_class_stripped.map(main_class_map).fillna('NA')
+        df['Category'] = df_class_stripped.map(category_map).fillna('NA')
+        df['Sub_Class'] = df_class_stripped.map(sub_class_map).fillna('NA')
         
         # Count matches
-        matched = (df['Class_name'] != 'NA').sum()
+        matched = (df['Main_Class'] != 'NA').sum()
         total = len(df)
         
-        self._log(f"   📋 Mapped {matched}/{total} lipids to class names ({matched/total*100:.1f}%)\n")
+        self._log(f"   📋 Mapped {matched}/{total} lipids to lipid taxonomy ({matched/total*100:.1f}%)\n")
         
         # Log any unmatched classes for debugging
-        unmatched_classes = df_class_stripped[df['Class_name'] == 'NA'].unique()
+        unmatched_classes = df_class_stripped[df['Main_Class'] == 'NA'].unique()
         if len(unmatched_classes) > 0:
             self._log(f"   ⚠️  Unmatched classes: {', '.join(unmatched_classes[:10])}")
             if len(unmatched_classes) > 10:
@@ -2196,7 +2209,7 @@ class CleanColumnDataCleaner:
     
     def _reorder_lipid_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Reorder columns in lipid dataframe to place Class_name immediately after Class
+        Reorder columns in lipid dataframe to place taxonomy columns immediately after Class
         
         Args:
             df: Lipid DataFrame
@@ -2207,13 +2220,13 @@ class CleanColumnDataCleaner:
         if df is None or df.empty:
             return df
         
-        # If Class_name doesn't exist, return as-is
-        if 'Class_name' not in df.columns:
+        # If the taxonomy columns don't exist, return as-is
+        if 'Main_Class' not in df.columns:
             return df
         
         # Define desired column order for feature columns
         feature_order = [
-            'LipidID', 'Class', 'Class_name', 'LipidGroup', 'Charge', 'CalcMz', 'BaseRt', 
+            'LipidID', 'Class', 'Main_Class', 'Category', 'Sub_Class', 'LipidGroup', 'Charge', 'CalcMz', 'BaseRt', 
             'SubClass', 'AdductIon', 'IonFormula', 'MolStructure', 
             'PPM_diff', 'Polarity'
         ]
@@ -2744,7 +2757,7 @@ class CleanColumnDataCleaner:
         
         # Feature columns to keep
         feature_candidates = [
-            'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+            'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
             'AdductIon','IonFormula','MolStructure','Polarity'
         ]
         id_cols = [c for c in feature_candidates if c in df.columns]
@@ -2815,7 +2828,7 @@ class CleanColumnDataCleaner:
             import re
             # Identify feature / metadata columns to retain (broader than previous id-only approach)
             feature_candidates = [
-                'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+                'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                 'AdductIon','IonFormula','MolStructure','Polarity'
             ]
             id_cols = [c for c in feature_candidates if c in df.columns]
@@ -2926,7 +2939,7 @@ class CleanColumnDataCleaner:
         
         # Identify numeric columns - already verified as numeric Area columns
         self._log(f"   Identifying verified numeric sample columns\n")
-        feature_cols = {'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+        feature_cols = {'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                        'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity','adduct_rank'}
         numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and c not in feature_cols]
         self._log(f"   ✅ Found {len(numeric_cols)} verified numeric columns\n")
@@ -3154,12 +3167,12 @@ class CleanColumnDataCleaner:
           - Requires a 'Class' column
           - Identifies sample intensity columns (numeric columns not in feature set)
           - Groups by Class and sums sample columns
-          - Preserves Class_name mapping from the source dataframe
+                    - Preserves Main_Class/Category/Sub_Class mapping from the source dataframe
           - Drops rows where all summed sample values are zero
           - Returns (pos_class_df, neg_class_df) or None where not applicable
         """
         feature_cols = {
-            'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+            'LipidID','Class','Main_Class','Category','Sub_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
             'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity'
         }
 
@@ -3178,13 +3191,13 @@ class CleanColumnDataCleaner:
             if not sample_cols:
                 return None
             
-            # If Class_name exists, preserve it by taking first occurrence per Class
+            # Preserve lipid taxonomy columns by taking the first occurrence per Class
             groupby_cols = ['Class']
             agg_dict = {col: 'sum' for col in sample_cols}
             
-            if 'Class_name' in df.columns:
-                # Get the first Class_name for each Class group
-                agg_dict['Class_name'] = 'first'
+            for taxonomy_col in ['Main_Class', 'Category', 'Sub_Class']:
+                if taxonomy_col in df.columns:
+                    agg_dict[taxonomy_col] = 'first'
             
             grouped = df.groupby('Class', as_index=False).agg(agg_dict)
             
@@ -3192,11 +3205,9 @@ class CleanColumnDataCleaner:
             mask_all_zero = (grouped[sample_cols].fillna(0) == 0).all(axis=1)
             grouped = grouped.loc[~mask_all_zero]
             
-            # Reorder columns: Class, Class_name (if exists), then sample columns
-            if 'Class_name' in grouped.columns:
-                column_order = ['Class', 'Class_name'] + sample_cols
-            else:
-                column_order = ['Class'] + sample_cols
+            # Reorder columns: Class, taxonomy columns (if present), then sample columns
+            taxonomy_order = [col for col in ['Main_Class', 'Category', 'Sub_Class'] if col in grouped.columns]
+            column_order = ['Class'] + taxonomy_order + sample_cols
             
             grouped = grouped[column_order]
             
@@ -3272,7 +3283,7 @@ class CleanColumnDataCleaner:
             # 1. Columns starting with 'Area[' and ending with ']'
             # 2. Numeric columns that are not features and not Grade
             feature_cols = {
-                'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+                'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                 'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity', 'TotalScore', 
                 'FAKey', 'TotalGrade'
             }
@@ -3465,7 +3476,7 @@ class CleanColumnDataCleaner:
         try:
             # Identify feature (non-intensity) columns to exclude from zero check
             feature_cols = {
-                'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+                'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                 'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity'
             }
             # Numeric columns
@@ -3501,7 +3512,7 @@ class CleanColumnDataCleaner:
         try:
             # Identify feature (non-intensity) columns to preserve
             feature_cols = {
-                'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+                'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                 'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity'
             }
             

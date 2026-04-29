@@ -234,6 +234,12 @@ def _compute_lipid_msi_level(lipid_id_value: Any) -> str:
     if re.search(r'\d+:\d+', inside):
         return 'Level 3'
 
+    # Complete single identifier (no chain separation, no ratio notation) -> Level 2
+    # Matches: Q10, h26, ggh3444 (simple alphanumeric tokens)
+    # Rejects: n_hj_j_11_788_3 (underscores/slashes indicate multiple components)
+    if re.match(r'^[A-Za-z0-9\-\.]+$', inside):
+        return 'Level 2'
+
     return ''
 
 
@@ -688,7 +694,7 @@ class MetaboliteIDAnnotator:
             'LipidID': lipidid,
             'LipidMaps_ID': lmid,
             'LipidMaps_ID_Match_Type': match_type,
-            'KEGG_ID': '',  # Will be populated exclusively by KEGG API search using Class_name
+            'KEGG_ID': '',  # Will be populated exclusively by KEGG API search using Main_Class
             'PubChem_CID': pubchem,
             'HMDB_ID': hmdb,
             'ChEBI_ID': chebi,
@@ -710,7 +716,7 @@ class MetaboliteIDAnnotator:
         """Run lipid ID annotation using offline lipid_search and enrich via PubChem, KEGG, and HMDB."""
         from main_script.lipid_search import run_search as lipid_run_search  # local import to avoid hard dep in metabolite mode
 
-        # PRIORITY 1: Use cleaned_metabolites_df if available (Combined sheet with LipidID, Class, Class_name)
+        # PRIORITY 1: Use cleaned_metabolites_df if available (Combined sheet with LipidID, Class, Main_Class)
         # PRIORITY 2: Load from file
         # PRIORITY 3: Use pos_df only if nothing else available
         
@@ -742,7 +748,7 @@ class MetaboliteIDAnnotator:
                 sheet_names = excel_file.sheet_names
                 logger.info(f"[LIPID MODE] Excel file contains {len(sheet_names)} sheet(s): {', '.join(sheet_names)}")
                 
-                # Try to find the best sheet for annotation (prefer sheets with just LipidID, Class, Class_name)
+                # Try to find the best sheet for annotation (prefer sheets with LipidID, Class, Main_Class)
                 annotation_sheet = None
                 
                 # Check for known combined/annotation sheet names
@@ -957,32 +963,49 @@ class MetaboliteIDAnnotator:
             logger.warning(f"[LIPID MODE] Error separating matched/unmatched rows: {e}")
             df_matches = df_all_results
 
-        # KEGG search for ALL lipids using Class_name to populate KEGG_ID column
-        # (Do NOT use LipidMaps or PubChem for KEGG_ID - only KEGG API by Class_name)
-        if 'Class_name' in input_df.columns:
-            logger.info(f"[LIPID MODE] Starting KEGG search for ALL {len(input_df)} lipids using Class_name to populate KEGG_ID...")
+        # KEGG search for ALL lipids using Main_Class to populate KEGG_ID column
+        # (Do NOT use LipidMaps or PubChem for KEGG_ID - only KEGG API by Main_Class)
+        class_col = 'Main_Class' if 'Main_Class' in input_df.columns else None
+        if class_col:
+            logger.info(f"[LIPID MODE] Starting KEGG search for ALL {len(input_df)} lipids using {class_col} to populate KEGG_ID...")
             
             if self.progress_callback:
                 try:
-                    self.progress_callback(40, 100, f"🔍 Phase 2/3 (KEGG Search): searching ALL lipids by Class_name...")
+                    self.progress_callback(40, 100, f"🔍 Phase 2/3 (KEGG Search): searching ALL lipids by {class_col}...")
                 except Exception:
                     pass
             
-            # Build a mapping of LipidID -> Class_name from input_df for faster lookup
+            # Build a mapping of LipidID -> Main_Class from input_df for faster lookup
             lipid_class_map = {}
-            if 'LipidID' in input_df.columns and 'Class_name' in input_df.columns:
+            if 'LipidID' in input_df.columns and class_col in input_df.columns:
                 for _, input_row in input_df.iterrows():
                     lipid_id = input_row.get('LipidID')
-                    class_name = input_row.get('Class_name')
+                    class_name = input_row.get(class_col)
                     if pd.notna(lipid_id) and pd.notna(class_name):
                         lipid_class_map[str(lipid_id).strip()] = str(class_name).strip()
-                logger.debug(f"[KEGG SEARCH] Built Class_name lookup map with {len(lipid_class_map)} entries")
+                
+                logger.info(f"[KEGG SEARCH] ✅ Built {class_col} lookup map with {len(lipid_class_map)} entries")
+                
+                # Log sample entries for debugging
+                if lipid_class_map:
+                    sample_entries = list(lipid_class_map.items())[:5]
+                    logger.info(f"[KEGG SEARCH] 📋 Sample class map (first 5): {sample_entries}")
+                    
+                    # Show unique class values
+                    unique_classes = set(lipid_class_map.values())
+                    logger.info(f"[KEGG SEARCH] 🏷️  Unique Main_Class values found: {sorted(unique_classes)}")
+            else:
+                logger.error(f"[KEGG SEARCH] ❌ Cannot build class map!")
+                logger.error(f"  - LipidID in columns: {'LipidID' in input_df.columns}")
+                logger.error(f"  - {class_col} in columns: {class_col in input_df.columns if class_col else 'N/A'}")
+                logger.error(f"  - Available columns: {list(input_df.columns)}")
+                lipid_class_map = {}
             
             # Build KEGG results for ALL input lipids (not just unmatched)
             # Store KEGG metadata so we can also report how the ID was matched later
             kegg_id_map = {}  # LipidID -> {'KEGG_ID': str, 'match_type': 'Class'}
             processed_count = 0
-            kegg_class_cache = {}  # Cache results by Class_name to avoid redundant API calls
+            kegg_class_cache = {}  # Cache results by class taxonomy to avoid redundant API calls
             
             # Iterate through unique LipidIDs from input to search KEGG
             unique_lipids = input_df['LipidID'].dropna().unique() if 'LipidID' in input_df.columns else []
@@ -990,7 +1013,7 @@ class MetaboliteIDAnnotator:
             for lipid_id in unique_lipids:
                 try:
                     lipid_id_str = str(lipid_id).strip()
-                    # Get Class_name from the lookup map
+                    # Get class taxonomy from the lookup map
                     class_name = lipid_class_map.get(lipid_id_str)
                     
                     if class_name:
@@ -1002,21 +1025,23 @@ class MetaboliteIDAnnotator:
                         cache_key = normalized_class_name
                         if cache_key in kegg_class_cache:
                             kegg_result = kegg_class_cache[cache_key]
+                            logger.debug(f"[KEGG CACHE HIT] LipidID: {lipid_id_str}, Class: '{class_name}' -> Normalized: '{normalized_class_name}'")
                         else:
-                            logger.debug(f"[KEGG SEARCH] Searching for Class_name: '{normalized_class_name}' (original: '{class_name}', LipidID: {lipid_id_str})")
+                            logger.info(f"[KEGG SEARCH] 🔍 Searching for LipidID: {lipid_id_str} | Class: '{class_name}' -> Normalized: '{normalized_class_name}'")
                             kegg_result = self.search_kegg_api(normalized_class_name)
+                            logger.debug(f"[KEGG RESULT] {normalized_class_name}: {kegg_result}")
                             kegg_class_cache[cache_key] = kegg_result
                         
                         if kegg_result and kegg_result.get('found') and kegg_result.get('KEGG_ID'):
                             kegg_id_map[lipid_id_str] = {
                                 'KEGG_ID': kegg_result['KEGG_ID'],
-                                'match_type': 'Class'
+                                'match_type': class_col or 'Main_Class'
                             }
-                            logger.info(f"[KEGG SEARCH] ✅ Found KEGG_ID {kegg_result['KEGG_ID']} for Class_name: '{normalized_class_name}' (original: '{class_name}', LipidID: {lipid_id_str})")
+                            logger.info(f"[KEGG SEARCH] ✅ Found KEGG_ID {kegg_result['KEGG_ID']} for {class_col}: '{normalized_class_name}' (original: '{class_name}', LipidID: {lipid_id_str})")
                         else:
-                            logger.debug(f"[KEGG SEARCH] ❌ No KEGG match for Class_name: '{normalized_class_name}' (original: '{class_name}')")
+                            logger.debug(f"[KEGG SEARCH] ❌ No KEGG match for {class_col}: '{normalized_class_name}' (original: '{class_name}')")
                     else:
-                        logger.debug(f"[KEGG SEARCH] ⚠️ No Class_name found for LipidID: {lipid_id_str}")
+                        logger.debug(f"[KEGG SEARCH] ⚠️ No {class_col} found for LipidID: {lipid_id_str}")
                     
                     processed_count += 1
                     # Progress update every 10 items or at the end
@@ -1032,13 +1057,28 @@ class MetaboliteIDAnnotator:
                     logger.warning(f"[KEGG SEARCH] Error processing LipidID {lipid_id}: {e}")
                     continue
             
-            logger.info(f"[KEGG SEARCH] ✅ Found KEGG IDs for {len(kegg_id_map)} out of {len(unique_lipids)} unique lipids")
+            # Report unique classes searched
+            unique_classes_searched = set(kegg_class_cache.keys())
+            classes_with_hits = {k: v for k, v in kegg_class_cache.items() if v.get('found')}
+            
+            logger.info(f"[KEGG SEARCH] Summary:")
+            logger.info(f"  Total unique lipid IDs: {len(unique_lipids)}")
+            logger.info(f"  Unique class names searched: {len(unique_classes_searched)}")
+            logger.info(f"  Classes with KEGG hits: {len(classes_with_hits)}")
+            logger.info(f"  Lipids assigned KEGG IDs: {len(kegg_id_map)}")
+            
+            if classes_with_hits:
+                logger.info(f"  Classes with KEGG matches: {', '.join(list(classes_with_hits.keys())[:10])}")
+                if len(classes_with_hits) > 10:
+                    logger.info(f"  ... and {len(classes_with_hits) - 10} more classes")
+            else:
+                logger.warning(f"[KEGG SEARCH] ⚠️ NO CLASSES RETURNED KEGG HITS! Searched classes: {', '.join(list(unique_classes_searched)[:10])}")
             
             # Store kegg_id_map for later population (after enrichment to avoid being overwritten)
             # We'll populate KEGG_ID in annotated_df after the enrichment loop completes
         else:
-            kegg_id_map = {}  # Empty map if no Class_name column
-            logger.info("[LIPID MODE] Class_name column not found; skipping KEGG search")
+            kegg_id_map = {}  # Empty map if no class taxonomy column
+            logger.info("[LIPID MODE] Main_Class column not found; skipping KEGG search")
 
         # NOTE: Backup file creation removed per user request. We proceed
         # directly to enrichment without writing intermediate backups.
@@ -1212,7 +1252,7 @@ class MetaboliteIDAnnotator:
                     pubchem_cid = int(float(str(base['PubChem_CID']).strip()))
                     
                     # Only fetch cross-refs for missing IDs to avoid overwriting existing data
-                    # In lipid mode, do NOT populate KEGG_ID from PubChem (only from KEGG API by Class_name)
+                    # In lipid mode, do NOT populate KEGG_ID from PubChem (only from KEGG API by Main_Class)
                     needs_enrichment = (
                         not base.get('HMDB_ID') or 
                         not base.get('ChEBI_ID') or 
@@ -1506,7 +1546,7 @@ class MetaboliteIDAnnotator:
             populated_count = final_df['KEGG_ID'].astype(str).str.strip().ne('').sum()
             logger.info(
                 f"[KEGG SEARCH] ✅ Populated KEGG_ID column in final output: {populated_count}/{len(final_df)} rows have KEGG IDs "
-                f"({assigned_rows} set via Class_name matches)"
+                f"({assigned_rows} set via Main_Class matches)"
             )
 
         # Reorder columns to place PubChem_CID beside KEGG_ID for clarity
