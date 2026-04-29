@@ -141,7 +141,7 @@ Result:
 
 🔄 Merging datasets...
   ✓ Prepared Metabolites: 500 rows, 3 pathway cols
-  ✓ Prepared Lipids: 300 rows, 2 pathway cols (Class_name ✓)
+  ✓ Prepared Lipids: 300 rows, 2 pathway cols (Main_Class ✓)
 
 🔧 Consolidating columns...
 ✅ Merge complete: 800 total features
@@ -164,7 +164,7 @@ The merged file contains:
 | SMPDB_Pathways | Combined SMPDB pathway annotations |
 | Upstream_Enzymes | Combined enzyme regulators |
 | Disease_Associations | Combined disease links |
-| Class_name | Lipid class (if from lipid data) |
+| Main_Class | Lipid class (if from lipid data) |
 
 ## Tips & Best Practices
 

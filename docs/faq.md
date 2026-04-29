@@ -490,4 +490,4 @@ For general support, use GitHub Issues (helps entire community).
 ---
 
 **Last Updated:** December 2024  
-**Version:** 1.0.0
+**Version:** 1.0.1

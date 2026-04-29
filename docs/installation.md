@@ -38,7 +38,7 @@ Download the latest release from:
 - **GitHub Releases:** [Insert GitHub release link]
 
 #### Step 2: Extract
-1. Extract `MetaboGraph_v1.0.0.zip` to your desired location
+1. Extract `MetaboGraph_v1.0.1.zip` to your desired location
 2. Recommended: `C:\Program Files\MetaboGraph\` or `C:\Users\YourName\MetaboGraph\`
 
 #### Step 3: Run

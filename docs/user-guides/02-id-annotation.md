@@ -122,7 +122,7 @@ Apply new filters to previously annotated data without re-running annotation:
 
 ### Lipid Output
 Same columns as metabolite annotation plus:
-- **Class_Name**: Lipid class (from LipidSearch)
+- **Main_Class**: Lipid class (from LipidSearch)
 - **Lipid_Species**: Parsed species name
 
 ---

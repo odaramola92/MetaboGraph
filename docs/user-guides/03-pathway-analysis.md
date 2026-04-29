@@ -95,7 +95,7 @@ After running pathway annotation, data is automatically pushed to Network tab.
    - **Feature ID**: Metabolite name column
    - **P-Value**: Significance column (prefers adjusted p-values)
    - **Log2 Fold Change**: Direction/magnitude of change
-   - **Class** / **Class_name**: For lipid data
+       - **Class** / **Main_Class**: For lipid data
 
 ## Enrichment Analysis (Fisher's ORA)
 
