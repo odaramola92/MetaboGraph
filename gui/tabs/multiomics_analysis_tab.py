@@ -769,10 +769,10 @@ class MultiOmicsAnalysisTab(BaseTab):
                 # Get disease columns
                 disease_cols = [col for col in df.columns if 'disease' in col.lower()]
                 
-                # Check for Class_name column (for lipid class compression in network analysis)
+                # Check for Main_Class column (for lipid class compression in network analysis)
                 class_name_col = None
                 for col in df.columns:
-                    if col.lower() == 'class_name':
+                    if str(col).lower() in ['main_class', 'mainclass']:
                         class_name_col = col
                         break
                 
@@ -782,7 +782,7 @@ class MultiOmicsAnalysisTab(BaseTab):
                 keep_cols.extend(upstream_cols)
                 keep_cols.extend(disease_cols)
                 
-                # Add Class_name if available (needed for network class compression)
+                # Add Main_Class if available (needed for network class compression)
                 if class_name_col:
                     keep_cols.append(class_name_col)
                 
@@ -792,8 +792,8 @@ class MultiOmicsAnalysisTab(BaseTab):
                 
                 standardized_dfs.append(df_filtered)
                 
-                # Log what was prepared, including Class_name status
-                class_status = " (Class_name ✓)" if class_name_col and class_name_col in df_filtered.columns else ""
+                # Log what was prepared, including Main_Class status
+                class_status = " (Main_Class ✓)" if class_name_col and class_name_col in df_filtered.columns else ""
                 self.root.after(0, lambda s=source_name, r=len(df_filtered), p=len(pathway_cols), u=len(upstream_cols), d=len(disease_cols), cs=class_status: 
                                self._log(f"  ✓ Prepared {s}: {r} rows, {p} pathway cols, {u} upstream cols, {d} disease cols{cs}"))
             
@@ -963,10 +963,10 @@ class MultiOmicsAnalysisTab(BaseTab):
                     merged[base_name] = merged.apply(merge_disease, axis=1)
                     merged.drop([col for col in cols if col != base_name], axis=1, inplace=True)
             
-            # Consolidate Class_name column (for lipid class compression)
-            class_name_cols = [col for col in merged.columns if col.lower() == 'class_name' or col.startswith('Class_name')]
+            # Consolidate Main_Class column (for lipid class compression)
+            class_name_cols = [col for col in merged.columns if col.lower() in ['main_class', 'mainclass'] or col.startswith('Main_Class')]
             if len(class_name_cols) > 1:
-                # For Class_name, take the first non-empty value (they should be consistent for same feature)
+                # For Main_Class, take the first non-empty value (they should be consistent for same feature)
                 def merge_class_name(row):
                     for col in class_name_cols:
                         val = str(row[col])
@@ -974,14 +974,14 @@ class MultiOmicsAnalysisTab(BaseTab):
                             return val
                     return ''
                 
-                merged['Class_name'] = merged.apply(merge_class_name, axis=1)
+                merged['Main_Class'] = merged.apply(merge_class_name, axis=1)
                 # Drop suffixed versions
-                merged.drop([col for col in class_name_cols if col != 'Class_name'], axis=1, inplace=True)
-                self.root.after(0, lambda: self._log("  ✓ Consolidated Class_name column"))
-            elif len(class_name_cols) == 1 and class_name_cols[0] != 'Class_name':
-                # Rename single Class_name column to standard name
-                merged.rename(columns={class_name_cols[0]: 'Class_name'}, inplace=True)
-                self.root.after(0, lambda: self._log("  ✓ Standardized Class_name column"))
+                merged.drop([col for col in class_name_cols if col != 'Main_Class'], axis=1, inplace=True)
+                self.root.after(0, lambda: self._log("  ✓ Consolidated Main_Class column"))
+            elif len(class_name_cols) == 1 and class_name_cols[0] != 'Main_Class':
+                # Rename single class taxonomy column to standard name
+                merged.rename(columns={class_name_cols[0]: 'Main_Class'}, inplace=True)
+                self.root.after(0, lambda: self._log("  ✓ Standardized Main_Class column"))
             
             # Create All_Pathways column (required by Network Analysis tab)
             self.root.after(0, lambda: self._log("\n🔗 Creating combined pathway column..."))
@@ -1176,7 +1176,7 @@ class MultiOmicsAnalysisTab(BaseTab):
 
             # Reorder and ensure expected columns exist (fill missing as empty/NaN)
             expected_cols = [
-                'Name', 'Class_name', 'pvalue', 'log2FC',
+                'Name', 'Main_Class', 'pvalue', 'log2FC',
                 'HMDB_Pathways', 'Enzymes_Accession', 'Enzyme_Gene_name',
                 'Associated_Diseases', 'Transporters', 'Transporter_Gene_name', 'Transporter_Uniprot_ID',
                 'PathBank_Pathways', 'SMPDB_Pathways', 'WikiPathways', 'Metabolika_Pathways',
@@ -1199,15 +1199,15 @@ class MultiOmicsAnalysisTab(BaseTab):
 
             self.merged_data = merged
             
-            # Check if Class_name is in final dataset
-            has_class_name = 'Class_name' in merged.columns
+            # Check if Main_Class is in final dataset
+            has_class_name = 'Main_Class' in merged.columns
             
             self.root.after(0, lambda: self._log(f"\n✅ Merge complete!"))
             self.root.after(0, lambda: self._log(f"📊 Merged dataset: {len(merged)} rows, {len(merged.columns)} columns"))
             
             if has_class_name:
-                non_empty_class = merged['Class_name'].notna().sum()
-                self.root.after(0, lambda n=non_empty_class: self._log(f"🏷️  Class_name preserved: {n}/{len(merged)} rows have class annotations"))
+                non_empty_class = merged['Main_Class'].notna().sum()
+                self.root.after(0, lambda n=non_empty_class: self._log(f"🏷️  Main_Class preserved: {n}/{len(merged)} rows have class annotations"))
             
             # Export to Excel (must be called on main thread)
             self.root.after(100, self._export_merged_data)

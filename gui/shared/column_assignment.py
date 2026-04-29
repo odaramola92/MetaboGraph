@@ -44,9 +44,9 @@ FEATURE_COLUMNS_CANONICAL = [
     'Name', 'Name_Key', 'Formula', 'Molecular_Formula', 'Molecular Formula', 'MW', 'Molecular_Weight', 'ppm',
     'Reference Ion', 'Reference_Ion', 'MS2', 'm/z', 'RT', 'RT [min]', 'Area (Max.)', 'Polarity', 'MS2_Purity', 'MS2 Purity [%]',
     'LipidMaps_ID', 'PubChem_CID', 'KEGG_ID', 'HMDB_ID', 'ChEBI_ID', 'CAS', 'SMILES', 'InChI', 'InChIKey', 'IUPAC_Name',
-    'Super_Class', 'Class', 'Sub_Class', 'Endogenous_Source', 'Metabolika Pathways', 'BioCyc Pathways',
+    'Super_Class', 'Class', 'Main_Class', 'Sub_Class', 'Endogenous_Source', 'Metabolika Pathways', 'BioCyc Pathways',
     # Additional from user examples
-    'LipidID', 'Class_name', 'CalcMz', 'BaseRt', 'AdductIon', 'LipidMaps_ID_Match_Type', 'Systematic_Name', 'Preferred_Name',
+    'LipidID', 'Main_Class', 'CalcMz', 'BaseRt', 'AdductIon', 'LipidMaps_ID_Match_Type', 'Systematic_Name', 'Preferred_Name',
     'Abbreviation', 'KEGG_Match_Type', 'match_source', 'annotation_sources', 'Endogenous', 'metabolite_id',
     # Mass spectrometry feature columns (commonly seen variations)
     'Calc_mass', 'Calc. MW', 'Calc_mass_(M+H)', 'Calc Mass', 'CalcMass', 'Calculated Mass', 'Theoretical Mass',
@@ -283,12 +283,6 @@ COLUMN_TYPES = {
         'examples': ['Delta(PPM)[Sample1]', 'PPM[Sample1]'],
         'category': 'Lipid Data',
     },
-    'Class_name': {
-        'description': 'Lipid class name (recommended for lipid ID annotation)',
-        'required_by': [],
-        'examples': ['Class_name', 'ClassName', 'Class Name', 'Lipid Class Name'],
-        'category': 'Lipid Data',
-    },
     'QC Sample': {
         'description': 'Quality Control (QC) sample columns - used for LOESS drift correction and monitoring',
         'required_by': [],
@@ -356,9 +350,9 @@ TAB_REQUIREMENTS = {
     },
     'statistics_lipid': {
         'required': ['LipidID'],  # Only LipidID required
-        'optional': ['Class', 'Class_name', 'Sample Column', 'Feature Column', 'HMDB ID', 'P-Value', 'Endogenous', 'Endogenous_Source'],  # Added for ML filtering
+        'optional': ['Class', 'Main_Class', 'Sample Column', 'Feature Column', 'HMDB ID', 'P-Value', 'Endogenous', 'Endogenous_Source'],  # Added for ML filtering
         'title': 'Lipid Statistics - Column Verification',
-        'description': 'Verify LipidID and sample columns for lipid statistical analysis. Feature columns = lipid metadata (LipidID, Class, Class_name, CalcMz, etc.). Sample columns = numeric intensity columns for biological samples.',
+        'description': 'Verify LipidID and sample columns for lipid statistical analysis. Feature columns = lipid metadata (LipidID, Class, Main_Class, CalcMz, etc.). Sample columns = numeric intensity columns for biological samples.',
         'detect_samples': True,  # Auto-detect numeric sample columns
         'multi_sheet': False,
         'can_calculate': [],  # No calculations - raw data only
@@ -398,10 +392,10 @@ TAB_REQUIREMENTS = {
     },
     'lipid_pathway_annotation': {
         'required': ['Feature ID'],
-        'recommended': ['Class_name'],
+        'recommended': ['Main_Class'],
         'optional': ['Class', 'LipidMaps ID'],
         'title': 'Lipid Pathway Annotation Column Assignment',
-        'description': 'Verify columns for lipid pathway annotation. Required: Feature ID (LipidID). Recommended: Class_name (for KEGG pathway lookup). Lipid mode performs ID annotation first, then proceeds to lipid pathway annotation.',
+        'description': 'Verify columns for lipid pathway annotation. Required: Feature ID (LipidID). Recommended: Main_Class (for KEGG pathway lookup). Lipid mode performs ID annotation first, then proceeds to lipid pathway annotation.',
         'detect_samples': False,
         'multi_sheet': True,
         'can_calculate': [],
@@ -430,9 +424,9 @@ TAB_REQUIREMENTS = {
     },
     'lipid_class': {
         'required': ['Class'],  # Class is the identifier for class sheets
-        'optional': ['Class_name', 'Sample Column', 'Feature Column'],  # Same structure as statistics_lipid
+        'optional': ['Main_Class', 'Sample Column', 'Feature Column'],  # Same structure as statistics_lipid
         'title': 'Lipid Class Sheet - Column Verification',
-        'description': 'Verify Class and sample columns for lipid class statistical analysis. Feature columns = class metadata (Class, Class_name, etc.). Sample columns = numeric intensity columns aggregated by class.',
+        'description': 'Verify Class and sample columns for lipid class statistical analysis. Feature columns = class metadata (Class, Main_Class, etc.). Sample columns = numeric intensity columns aggregated by class.',
         'detect_samples': True,  # Auto-detect numeric sample columns
         'multi_sheet': False,
         'can_calculate': [],  # No calculations - raw data only
@@ -443,15 +437,15 @@ TAB_REQUIREMENTS = {
     },
     'lipid_id_annotation': {
         'required': ['LipidID'],
-        'optional': ['Class', 'Class_name'],
+        'optional': ['Class', 'Main_Class'],
         'title': 'Lipid ID Annotation Column Assignment',
-        'description': 'Verify columns for Custom Lipid ID Search. Required: LipidID. Optional: Class. Recommended: Class_name.',
+        'description': 'Verify columns for Custom Lipid ID Search. Required: LipidID. Optional: Class. Recommended: Main_Class.',
         'detect_samples': False,
         'multi_sheet': True,
     },
     'lipid_custom': {
         'required': ['Feature ID', 'P-Value', 'Log2 Fold Change'],
-        'optional': ['HMDB ID', 'KEGG ID', 'InChIKey', 'ChEBI ID', 'Fold Change', 'Class', 'Super Class', 'LipidID', 'Class_name'],
+        'optional': ['HMDB ID', 'KEGG ID', 'InChIKey', 'ChEBI ID', 'Fold Change', 'Class', 'Super Class', 'LipidID', 'Main_Class'],
         'title': 'Lipid Pathway Analysis Column Assignment',
         'description': 'Verify columns for lipid pathway annotation. Required: Feature ID (LipidID or Class), P-Value (p-value or p_adj), Log2 Fold Change. Sample columns will be auto-detected.',
         'detect_samples': True,
@@ -528,7 +522,7 @@ class ColumnDetector:
             'Log2 Fold Change': [r'log2fc', r'logfc', r'logfoldch'],  # log2_fc → log2fc, log_fold_ch → logfoldch
             '-Log10 P-Value': [r'neglog', r'negadj', r'log10p', r'log10adj'],  # neg_log → neglog, neg_adj_p → negadjp
             'Class': [r'^class$', r'lipidclass', r'metaboliteclass'],  # lipid_class → lipidclass
-            'Class_name': [r'^classname$', r'classname', r'lipidclassname', r'^class_name$'],  # class_name → classname, lipid_class_name → lipidclassname
+            'Main_Class': [r'^mainclass$', r'mainclass', r'lipidmainclass', r'^main_class$'],
             'Super Class': [r'superclass'],  # super_class → superclass
             'Formula': [r'^formula$', r'molecularformula', r'molformula'],  # molecular_formula → molecularformula
             'Metabolika Pathways': [r'^metabolikapathway', r'metabolikapathway$'],  # Must match exactly or contain word
@@ -2267,7 +2261,7 @@ class ColumnAssignmentDialog(tk.Toplevel):
                 all_detections[excel_col] = 'Grade'
             # For statistics tabs, auto-detect sample and feature columns
             elif self.tab_type in ['statistics_metabolite', 'statistics_lipid']:
-                # First, try to detect specific feature type (LipidID, Class, Class_name, etc.)
+                # First, try to detect specific feature type (LipidID, Class, Main_Class, etc.)
                 # This ensures known feature columns like 'Endogenous' are detected first
                 detected_type = self._auto_detect_column_type(excel_col)
                 if detected_type != 'Ignore':
@@ -2541,9 +2535,11 @@ class ColumnAssignmentDialog(tk.Toplevel):
             # Check for Class (important for lipid classification)
             if 'Class' in available_types and ColumnDetector.detect_column(excel_col, 'Class'):
                 return 'Class'
-            # Check for Class_name (important for lipid classification and pathway lookup)
-            if 'Class_name' in available_types and ColumnDetector.detect_column(excel_col, 'Class_name'):
-                return 'Class_name'
+            # Check for Main_Class (important for lipid classification and pathway lookup)
+            if 'Main_Class' in available_types and ColumnDetector.detect_column(excel_col, 'Main_Class'):
+                return 'Main_Class'
+            if 'Main_Class' in available_types and ColumnDetector.detect_column(excel_col, 'Main_Class'):
+                return 'Main_Class'
             # Check for other optional columns like Formula, Pathways, etc.
             for col_type in available_types:
                 if col_type not in ['Sample Column', 'Feature Column']:  # Skip sample/feature identifiers

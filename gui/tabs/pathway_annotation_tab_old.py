@@ -1756,7 +1756,7 @@ class PathwayAnnotationTab(BaseTab):
         mode = self.pathway_data_mode.get()
         if mode == 'lipid':
             self.pathway_mode_info_label.config(
-                text="ℹ️ Lipid mode: Feature ID (LipidID) required, Class_name recommended. Performs ID annotation → Lipid pathway annotation."
+                text="ℹ️ Lipid mode: Feature ID (LipidID) required, Main_Class recommended. Performs ID annotation → Lipid pathway annotation."
             )
         else:
             self.pathway_mode_info_label.config(
@@ -1937,11 +1937,11 @@ class PathwayAnnotationTab(BaseTab):
                             self.verified_assignments[col_type] = col
                             break
                 
-                # Also detect Class and Class_name for lipid mode
-                for col_type in ['Class', 'Class_name']:
+                # Also detect Class and Main_Class for lipid mode
+                for col_type in ['Class', 'Main_Class']:
                     for col in df.columns:
-                        # Special handling for Class_name (not in standard patterns)
-                        if col_type == 'Class_name' and str(col).lower() in ['class_name', 'classname', 'class name']:
+                        # Special handling for Main_Class (not in standard patterns)
+                        if col_type == 'Main_Class' and str(col).lower() in ['main_class', 'mainclass', 'main class']:
                             self.verified_assignments[col_type] = col
                             break
                         elif ColumnDetector.detect_column(col, col_type):
@@ -2016,7 +2016,7 @@ class PathwayAnnotationTab(BaseTab):
                 self.root.after(0, lambda: self.pathway_progress_text.see(tk.END))
                 
                 # Use correct tab type based on mode
-                # Lipid mode uses lipid_pathway_annotation (Feature ID + Class_name)
+                # Lipid mode uses lipid_pathway_annotation (Feature ID + Main_Class)
                 # Metabolite mode uses pathway_annotation (Feature ID + optional IDs)
                 if mode == 'lipid':
                     tab_type = 'lipid_pathway_annotation'
@@ -2057,17 +2057,17 @@ class PathwayAnnotationTab(BaseTab):
                     
                     # Build summary based on mode
                     if mode == 'lipid':
-                        # Lipid mode: show Class_name and Class
-                        class_name = result['assignments'].get('Class_name')
+                        # Lipid mode: show Main_Class and Class
+                        class_name = result['assignments'].get('Main_Class')
                         class_col = result['assignments'].get('Class')
                         lipidmaps_id = result['assignments'].get('LipidMaps ID')
                         
                         summary_lines = [f"{mode_text} Pathway Annotation Verification:"]
                         summary_lines.append(f"  ✓ Feature ID (LipidID): {feature_id}")
                         if class_name:
-                            summary_lines.append(f"  ✓ Class_name: {class_name} (recommended for KEGG lookup)")
+                            summary_lines.append(f"  ✓ Main_Class: {class_name} (recommended for KEGG lookup)")
                         else:
-                            summary_lines.append(f"  ⚠️ Class_name: Not assigned (KEGG pathway lookup may be limited)")
+                            summary_lines.append(f"  ⚠️ Main_Class: Not assigned (KEGG pathway lookup may be limited)")
                         if class_col:
                             summary_lines.append(f"  ✓ Class: {class_col}")
                         if lipidmaps_id:

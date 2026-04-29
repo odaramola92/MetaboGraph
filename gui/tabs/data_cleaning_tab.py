@@ -1831,7 +1831,7 @@ class DataCleaningTab(BaseTab):
                 # Helper to count sample columns even after column cleaning (Area[ ] may be stripped)
                 def _count_sample_cols(df_cls: pd.DataFrame) -> int:
                     feature_cols = {
-                        'LipidID','Class','Class_name','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
+                        'LipidID','Class','Main_Class','LipidGroup','Charge','CalcMz','BaseRt','SubClass',
                         'AdductIon','IonFormula','MolStructure','ObsMz','ObsRt','Polarity'
                     }
                     area_like = [c for c in df_cls.columns if isinstance(c, str) and c.startswith('Area[') and c.endswith(']')]
@@ -1844,23 +1844,23 @@ class DataCleaningTab(BaseTab):
                 # Check positive class
                 if isinstance(pos_cls, pd.DataFrame) and not pos_cls.empty:
                     has_class_col = 'Class' in pos_cls.columns
-                    has_class_name = 'Class_name' in pos_cls.columns
+                    has_main_class = 'Main_Class' in pos_cls.columns
                     sample_count = _count_sample_cols(pos_cls)
                     
                     class_verify_msg += f"✓ Positive_Lipid_Class: {len(pos_cls)} rows\n"
                     class_verify_msg += f"  {'✓' if has_class_col else '❌'} Class column: {'Found' if has_class_col else 'MISSING - REQUIRED'}\n"
-                    class_verify_msg += f"  {'✓' if has_class_name else '✗'} Class_name column: {len(pos_cls.columns)} total columns\n"
+                    class_verify_msg += f"  {'✓' if has_main_class else '✗'} Main_Class column: {len(pos_cls.columns)} total columns\n"
                     class_verify_msg += f"  {'✓' if sample_count > 0 else '❌'} Area/sample columns: {sample_count} column(s)\n\n"
                 
                 # Check negative class
                 if isinstance(neg_cls, pd.DataFrame) and not neg_cls.empty:
                     has_class_col = 'Class' in neg_cls.columns
-                    has_class_name = 'Class_name' in neg_cls.columns
+                    has_main_class = 'Main_Class' in neg_cls.columns
                     sample_count = _count_sample_cols(neg_cls)
                     
                     class_verify_msg += f"✓ Negative_Lipid_Class: {len(neg_cls)} rows\n"
                     class_verify_msg += f"  {'✓' if has_class_col else '❌'} Class column: {'Found' if has_class_col else 'MISSING - REQUIRED'}\n"
-                    class_verify_msg += f"  {'✓' if has_class_name else '✗'} Class_name column: {len(neg_cls.columns)} total columns\n"
+                    class_verify_msg += f"  {'✓' if has_main_class else '✗'} Main_Class column: {len(neg_cls.columns)} total columns\n"
                     class_verify_msg += f"  {'✓' if sample_count > 0 else '❌'} Area/sample columns: {sample_count} column(s)\n\n"
                 
                 class_verify_msg += "✅ Class sheets are ready for class-level statistics analysis"

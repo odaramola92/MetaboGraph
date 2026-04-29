@@ -237,7 +237,7 @@ class PathwayNetworkTab(BaseTab):
             logger.error(error_msg, exc_info=True)
     
     def _auto_detect_network_columns(self, df: pd.DataFrame):
-        """Auto-detect comparison columns (P-Value, Log2FC, Feature ID, Class, Class_name) for network analysis"""
+        """Auto-detect comparison columns (P-Value, Log2FC, Feature ID, Class, Main_Class) for network analysis"""
         from gui.shared.column_assignment import ColumnDetector
         
         try:
@@ -260,7 +260,7 @@ class PathwayNetworkTab(BaseTab):
                     log2fc = col
                 if class_col is None and ColumnDetector.detect_column(col, 'Class'):
                     class_col = col
-                if class_name_col is None and ColumnDetector.detect_column(col, 'Class_name'):
+                if class_name_col is None and ColumnDetector.detect_column(col, 'Main_Class'):
                     class_name_col = col
 
             preferred_pvalue = ColumnDetector.select_best_pvalue_column(pvalue_candidates)
@@ -284,8 +284,8 @@ class PathwayNetworkTab(BaseTab):
                 self._log_network(f"  ✓ Class: {class_col}\n")
             
             if class_name_col:
-                self.verified_network_assignments['Class_name'] = class_name_col
-                self._log_network(f"  ✓ Class_name: {class_name_col}\n")
+                self.verified_network_assignments['Main_Class'] = class_name_col
+                self._log_network(f"  ✓ Main_Class: {class_name_col}\n")
             
             # Check if all required columns detected
             required = ['Feature ID', 'P-Value', 'Log2 Fold Change']
@@ -395,8 +395,8 @@ class PathwayNetworkTab(BaseTab):
                     
                     # Three explicit workflow branches:
                     # 1. Compression OFF → individual nodes only
-                    # 2. Compression ON + no Class_name column → fallback to individual nodes  
-                    # 3. Compression ON + Class_name exists → aggregate classes
+                    # 2. Compression ON + no Main_Class column → fallback to individual nodes  
+                    # 3. Compression ON + Main_Class exists → aggregate classes
                     
                     df_for_network = None
                     class_mapping_df = None
@@ -412,19 +412,19 @@ class PathwayNetworkTab(BaseTab):
                         df_for_network = df_renamed.copy()
                         class_mapping_df = None
                         
-                    elif compress_requested and 'Class_name' not in df_renamed.columns:
+                    elif compress_requested and 'Main_Class' not in df_renamed.columns:
                         # ─────────────────────────────────────────────────────────
-                        # BRANCH 2b: COMPRESSION REQUESTED BUT NO Class_name
+                        # BRANCH 2b: COMPRESSION REQUESTED BUT NO Main_Class
                         # Fallback to individual mode (same as Branch 1)
                         # ─────────────────────────────────────────────────────────
-                        self._log_network("\n⚠️ WORKFLOW MODE: Individual Compounds (Class_name column missing)\n")
-                        self._log_network("   Compression requested but Class_name not found\n")
+                        self._log_network("\n⚠️ WORKFLOW MODE: Individual Compounds (Main_Class column missing)\n")
+                        self._log_network("   Compression requested but Main_Class not found\n")
                         self._log_network("   Falling back to individual compound mode\n\n")
                         
                         df_for_network = df_renamed.copy()
                         class_mapping_df = None
                         
-                    elif compress_requested and 'Class_name' in df_renamed.columns:
+                    elif compress_requested and 'Main_Class' in df_renamed.columns:
                         try:
                             # Helper to split pathways consistently
                             def _parse_pathways(value):
@@ -468,10 +468,11 @@ class PathwayNetworkTab(BaseTab):
                                 self._log_network("⚠️ P-value or log2FC column missing. Using all lipids for compression.\n")
                                 df_significant = df_renamed.copy()
 
-                            # Step 3: Separate lipids with/without Class_name
-                            class_name_values = df_significant['Class_name'].astype(str).str.strip()
+                            # Step 3: Separate lipids with/without Main_Class
+                            class_tax_col = 'Main_Class'
+                            class_name_values = df_significant[class_tax_col].astype(str).str.strip()
                             has_class_mask = (
-                                df_significant['Class_name'].notna() &
+                                df_significant[class_tax_col].notna() &
                                 (class_name_values != '') &
                                 (class_name_values.str.lower() != 'nan') &
                                 (class_name_values.str.lower() != 'na')
@@ -481,10 +482,10 @@ class PathwayNetworkTab(BaseTab):
                             df_without_class = df_significant[~has_class_mask].copy()
 
                             self._log_network("📊 Class assignment analysis:\n")
-                            self._log_network(f"   • Significant lipids WITH Class_name: {len(df_with_class)}\n")
-                            self._log_network(f"   • Significant lipids WITHOUT Class_name: {len(df_without_class)}\n")
+                            self._log_network(f"   • Significant lipids WITH {class_tax_col}: {len(df_with_class)}\n")
+                            self._log_network(f"   • Significant lipids WITHOUT {class_tax_col}: {len(df_without_class)}\n")
 
-                            # Step 4: Aggregate lipids WITH Class_name into class nodes while preserving unique members
+                            # Step 4: Aggregate lipids WITH Main_Class into class nodes while preserving unique members
                             preserved_individual_rows = []
                             preserved_details = []
                             unique_pathway_ratio = getattr(self, 'class_unique_pathway_ratio', 0.5)
@@ -497,7 +498,7 @@ class PathwayNetworkTab(BaseTab):
                                                'PathBank_Pathways', 'SMPDB_Pathways', 'WikiPathways',
                                                'Metabolika_Pathways', 'Reactome_Pathways', 'KEGG_Pathways']
 
-                                for class_name, block in df_with_class.groupby('Class_name'):
+                                for class_name, block in df_with_class.groupby(class_tax_col):
                                     block = block.copy()
                                     class_size = len(block)
                                     member_names = block['Name'].astype(str).tolist()
@@ -545,7 +546,7 @@ class PathwayNetworkTab(BaseTab):
                                     if class_display_name.lower() in member_name_set:
                                         class_display_name = f"{class_display_name} (class)"
                                     agg_row['Name'] = class_display_name
-                                    agg_row['Class_name'] = class_display_name
+                                    agg_row[class_tax_col] = class_display_name
                                     agg_row['Class_members'] = '|'.join(member_names)
                                     agg_row['Class_member_count'] = len(member_names)
 
@@ -604,7 +605,7 @@ class PathwayNetworkTab(BaseTab):
                                 self._log_network("\n✅ Class compression complete:\n")
                                 self._log_network(f"   • Class nodes created: {n_class_nodes}\n")
                                 self._log_network(f"   • Unique lipids preserved from their classes: {n_preserved}\n")
-                                self._log_network(f"   • Lipids without Class_name: {n_without_class}\n")
+                                self._log_network(f"   • Lipids without {class_tax_col}: {n_without_class}\n")
                                 self._log_network(f"   • Total compounds for analysis: {len(df_for_network)}\n")
 
                                 if preserved_details:
@@ -617,7 +618,7 @@ class PathwayNetworkTab(BaseTab):
                                     self._log_network("\n")
                             else:
                                 df_for_network = df_without_class.copy()
-                                self._log_network("ℹ️ No significant lipids with Class_name found. Using individual lipids.\n")
+                                self._log_network(f"ℹ️ No significant lipids with {class_tax_col} found. Using individual lipids.\n")
 
                         except Exception as compression_error:
                             self._log_network(
@@ -3614,7 +3615,7 @@ class PathwayNetworkTab(BaseTab):
         self._create_tooltip(compress_cb, 
                              "Compress: Merge class members sharing ALL same pathways\n"
                              "Individual nodes shown for members with unique pathways\n"
-                             "Requires Class_name column in data")
+                             "Requires Main_Class column in data")
 
         # PATHWAY ENRICHMENT FILTERS (used during calculation)
         enrichment_filter_frame = tk.LabelFrame(left_content, text="🔬 Pathway Enrichment Filters", font=('Arial', 9, 'bold'),
@@ -7893,6 +7894,77 @@ For questions or issues, refer to the main documentation.
                         self._log_network(f"   max_pathways={max_pathways_param}\n")
                         self._log_network(f"   pathway_p_threshold={pathway_p_threshold} will be used for display filtering AFTER calculation\n\n")
                         
+                        disease_cols_to_check = ['Associated_Diseases', 'Reactome_Disease']
+                        cols_present = [c for c in disease_cols_to_check if c in df.columns]
+                        from main_script.metabolite_pathway_network import is_pathway_overriding_disease
+
+                        reclassified_count = 0
+                        total_tokens_checked = 0
+                        tokens_moved_to_pathways = 0
+
+                        for idx in df.index:
+                            for disease_col in cols_present:
+                                disease_str = df.at[idx, disease_col]
+                                if pd.isna(disease_str) or not str(disease_str).strip():
+                                    continue
+
+                                tokens = [t.strip() for t in str(disease_str).split('|') if t.strip()]
+                                if not tokens:
+                                    continue
+
+                                kept_diseases = []
+                                moved_pathways = []
+
+                                for token in tokens:
+                                    total_tokens_checked += 1
+                                    is_pathway = is_pathway_overriding_disease(token)
+                                    if is_pathway:
+                                        moved_pathways.append(token)
+                                        tokens_moved_to_pathways += 1
+                                    else:
+                                        kept_diseases.append(token)
+
+                                if moved_pathways:
+                                    df.at[idx, disease_col] = '|'.join(kept_diseases) if kept_diseases else ''
+                                    reclassified_count += 1
+
+                                if moved_pathways and 'All_Pathways' in df.columns:
+                                    existing = str(df.at[idx, 'All_Pathways']).split('|') if pd.notna(df.at[idx, 'All_Pathways']) else []
+                                    existing = [p.strip() for p in existing if p.strip()]
+                                    all_pathways = list(set(existing + moved_pathways))
+                                    df.at[idx, 'All_Pathways'] = '|'.join(all_pathways)
+
+                        if display_df is not None and len(display_df) > 0:
+                            cols_present_display = [c for c in disease_cols_to_check if c in display_df.columns]
+                            if cols_present_display:
+                                for idx in display_df.index:
+                                    for disease_col in cols_present_display:
+                                        disease_str = display_df.at[idx, disease_col]
+                                        if pd.isna(disease_str) or not str(disease_str).strip():
+                                            continue
+
+                                        tokens = [t.strip() for t in str(disease_str).split('|') if t.strip()]
+                                        if not tokens:
+                                            continue
+
+                                        kept_diseases = []
+                                        moved_pathways = []
+
+                                        for token in tokens:
+                                            is_pathway = is_pathway_overriding_disease(token)
+                                            if is_pathway:
+                                                moved_pathways.append(token)
+                                            else:
+                                                kept_diseases.append(token)
+
+                                        if moved_pathways:
+                                            display_df.at[idx, disease_col] = '|'.join(kept_diseases) if kept_diseases else ''
+                                            if 'All_Pathways' in display_df.columns:
+                                                existing = str(display_df.at[idx, 'All_Pathways']).split('|') if pd.notna(display_df.at[idx, 'All_Pathways']) else []
+                                                existing = [p.strip() for p in existing if p.strip()]
+                                                all_pathways = list(set(existing + moved_pathways))
+                                                display_df.at[idx, 'All_Pathways'] = '|'.join(all_pathways)
+                        
                         pathways_data = calculate_pathway_statistics_fisher_ora(
                             df,
                             min_metabolites=min_metabolites,
@@ -7918,6 +7990,77 @@ For questions or issues, refer to the main documentation.
                         self._log_network(f"   metabolite_p_threshold={p_threshold} (same as Fisher ORA for consistency)\n")
                         self._log_network(f"   ✓ IWPA uses CONTINUOUS WEIGHTS (not binary like Fisher ORA)\n")
                         self._log_network(f"   z_threshold={z_threshold}, weight_mode={weight_mode}, max_pathways={max_pathways_param}\n\n")
+                        
+                        disease_cols_to_check = ['Associated_Diseases', 'Reactome_Disease']
+                        cols_present = [c for c in disease_cols_to_check if c in df.columns]
+                        from main_script.metabolite_pathway_network import is_pathway_overriding_disease
+
+                        reclassified_count = 0
+                        total_tokens_checked = 0
+                        tokens_moved_to_pathways = 0
+
+                        for idx in df.index:
+                            for disease_col in cols_present:
+                                disease_str = df.at[idx, disease_col]
+                                if pd.isna(disease_str) or not str(disease_str).strip():
+                                    continue
+
+                                tokens = [t.strip() for t in str(disease_str).split('|') if t.strip()]
+                                if not tokens:
+                                    continue
+
+                                kept_diseases = []
+                                moved_pathways = []
+
+                                for token in tokens:
+                                    total_tokens_checked += 1
+                                    is_pathway = is_pathway_overriding_disease(token)
+                                    if is_pathway:
+                                        moved_pathways.append(token)
+                                        tokens_moved_to_pathways += 1
+                                    else:
+                                        kept_diseases.append(token)
+
+                                if moved_pathways:
+                                    df.at[idx, disease_col] = '|'.join(kept_diseases) if kept_diseases else ''
+                                    reclassified_count += 1
+
+                                if moved_pathways and 'All_Pathways' in df.columns:
+                                    existing = str(df.at[idx, 'All_Pathways']).split('|') if pd.notna(df.at[idx, 'All_Pathways']) else []
+                                    existing = [p.strip() for p in existing if p.strip()]
+                                    all_pathways = list(set(existing + moved_pathways))
+                                    df.at[idx, 'All_Pathways'] = '|'.join(all_pathways)
+
+                        if display_df is not None and len(display_df) > 0:
+                            cols_present_display = [c for c in disease_cols_to_check if c in display_df.columns]
+                            if cols_present_display:
+                                for idx in display_df.index:
+                                    for disease_col in cols_present_display:
+                                        disease_str = display_df.at[idx, disease_col]
+                                        if pd.isna(disease_str) or not str(disease_str).strip():
+                                            continue
+
+                                        tokens = [t.strip() for t in str(disease_str).split('|') if t.strip()]
+                                        if not tokens:
+                                            continue
+
+                                        kept_diseases = []
+                                        moved_pathways = []
+
+                                        for token in tokens:
+                                            is_pathway = is_pathway_overriding_disease(token)
+                                            if is_pathway:
+                                                moved_pathways.append(token)
+                                            else:
+                                                kept_diseases.append(token)
+
+                                        if moved_pathways:
+                                            display_df.at[idx, disease_col] = '|'.join(kept_diseases) if kept_diseases else ''
+                                            if 'All_Pathways' in display_df.columns:
+                                                existing = str(display_df.at[idx, 'All_Pathways']).split('|') if pd.notna(display_df.at[idx, 'All_Pathways']) else []
+                                                existing = [p.strip() for p in existing if p.strip()]
+                                                all_pathways = list(set(existing + moved_pathways))
+                                                display_df.at[idx, 'All_Pathways'] = '|'.join(all_pathways)
                         
                         pathways_data = calculate_pathway_statistics_iwpa(
                             df,

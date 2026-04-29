@@ -1056,6 +1056,34 @@ class IDAnnotationTab(BaseTab):
                  font=('Arial', 8, 'italic'),
                  fg='#7f8c8d').pack(anchor='w', padx=5, pady=(5, 2))
 
+        if not hasattr(self, '_loaded_prefs'):
+            self._loaded_prefs = self.load_id_annotation_prefs()
+
+        if not hasattr(self, 'lipid_keep_all_rows_var'):
+            self.lipid_keep_all_rows_var = tk.BooleanVar(
+                value=bool(self._loaded_prefs.get('lipid_keep_all_rows', False))
+            )
+
+        keep_rows_frame = tk.Frame(settings_frame, bg='#f0f0f0')
+        keep_rows_frame.pack(fill='x', padx=5, pady=(4, 2))
+
+        tk.Checkbutton(
+            keep_rows_frame,
+            text="Keep rows with no ID (do not remove unmatched rows)",
+            variable=self.lipid_keep_all_rows_var,
+            bg='#f0f0f0',
+            font=('Arial', 8, 'bold'),
+            fg='#2c3e50'
+        ).pack(anchor='w')
+
+        tk.Label(
+            keep_rows_frame,
+            text="Default: unchecked (rows without IDs are removed)",
+            bg='#f0f0f0',
+            fg='#7f8c8d',
+            font=('Arial', 7, 'italic')
+        ).pack(anchor='w', padx=(20, 0))
+
         workers_frame = tk.Frame(settings_frame, bg='#f0f0f0')
         workers_frame.pack(fill='x', padx=5, pady=5)
 
@@ -1359,11 +1387,15 @@ class IDAnnotationTab(BaseTab):
         # Initialize stop flag
         self.id_annotation_stop_flag = False
 
-        # For lipid mode, we do not apply ID-based filtering by default
+        # For lipid mode, row-removal can be controlled by the lipid checkbox:
+        # unchecked (default) -> remove rows without IDs
+        # checked -> keep all rows
         selected_id_cols = []
         effective_filter_mode = False
+        skip_id_filtering = getattr(self, 'lipid_keep_all_rows_var', tk.BooleanVar(value=False)).get()
         self._selected_id_cols_runtime = selected_id_cols
         self._effective_id_filter_mode_runtime = effective_filter_mode
+        self._skip_id_filtering_runtime = bool(skip_id_filtering)
         self._annotation_mode_runtime = mode
         self._annotation_workers_runtime = workers
         self._custom_id_search_mode = False
@@ -2398,6 +2430,7 @@ class IDAnnotationTab(BaseTab):
                 'ChEBI_ID', 'CAS', 'InChI', 'InChIKey'
             ],
             'skip_id_filtering': False,
+            'lipid_keep_all_rows': False,
             'ms2_filter': 'none',
             'confidence_filter': 'exclude_low',
             'require_endogenous_yes': False,
@@ -2425,6 +2458,7 @@ class IDAnnotationTab(BaseTab):
         prefs = {
             'id_selected_columns': [col for col, var in self.id_filter_vars.items() if var.get()],
             'skip_id_filtering': self.skip_id_filtering_var.get() if hasattr(self, 'skip_id_filtering_var') else False,
+            'lipid_keep_all_rows': self.lipid_keep_all_rows_var.get() if hasattr(self, 'lipid_keep_all_rows_var') else False,
             'ms2_filter': self.id_ms2_filter_var.get() if hasattr(self, 'id_ms2_filter_var') else 'none',
             'confidence_filter': self.id_confidence_filter_var.get() if hasattr(self, 'id_confidence_filter_var') else 'exclude_low',
             'require_endogenous_yes': self.require_endogenous_yes.get() if hasattr(self, 'require_endogenous_yes') else False,
