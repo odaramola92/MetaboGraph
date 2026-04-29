@@ -1946,6 +1946,38 @@ class IDAnnotationTab(BaseTab):
             mapped_override_sheet = str(getattr(self, '_id_annotation_selected_sheet', '') or '').strip().lower()
             use_override_df = bool(custom_mode) or (mapped_override_sheet == 'combined')
 
+            # If user explicitly selected a custom upload file, force file input over pre-loaded memory data.
+            manual_selected_path = ''
+            auto_loaded_path = ''
+            try:
+                manual_selected_path = (
+                    self.lipid_id_annotation_file.get().strip() if lipid_mode and hasattr(self, 'lipid_id_annotation_file')
+                    else self.id_input_file.get().strip() if hasattr(self, 'id_input_file')
+                    else ''
+                )
+            except Exception:
+                manual_selected_path = ''
+
+            try:
+                auto_loaded_path = (
+                    str(getattr(self, 'cleaned_lipid_excel_path', '') or '').strip() if lipid_mode
+                    else str(getattr(self, 'cleaned_excel_path', '') or '').strip()
+                )
+            except Exception:
+                auto_loaded_path = ''
+
+            norm_manual = os.path.normcase(os.path.abspath(manual_selected_path)) if manual_selected_path else ''
+            norm_auto = os.path.normcase(os.path.abspath(auto_loaded_path)) if auto_loaded_path else ''
+            force_file_input = bool(norm_manual and (not norm_auto or norm_manual != norm_auto))
+
+            if force_file_input:
+                print(f"📁 Custom upload selected -> force_file_input=True")
+                print(f"   Manual file: {manual_selected_path}")
+                if auto_loaded_path:
+                    print(f"   Auto-loaded file: {auto_loaded_path}")
+            else:
+                print("🧠 Using pre-loaded memory dataframe priority (no custom override file selected)")
+
             if not custom_mode and mapped_override_df is not None and not use_override_df:
                 print("ℹ️  Column mapping was done on a polarity sheet; merged output will still be built from the Pos/Neg workflow.")
                 if hasattr(self, 'id_progress_text'):
@@ -1966,6 +1998,7 @@ class IDAnnotationTab(BaseTab):
                 cleaned_metabolites_df=cleaned_metabolites_df,  # Pass DataFrame from memory
                 input_df_override=(mapped_override_df if use_override_df else None),  # Preserve Combined-first workflow unless Combined/custom override is used
                 metabolite_ids_df=metabolite_ids_df,            # Pass metabolite IDs for merging
+                force_file_input=force_file_input,              # Custom upload must override pre-loaded memory
                 pos_df=pos_df,                                  # Pass Positive DataFrame
                 neg_df=neg_df,                                  # Pass Negative DataFrame
                 id_filter_mode=id_filter_mode,                  # Pass ID filter mode
