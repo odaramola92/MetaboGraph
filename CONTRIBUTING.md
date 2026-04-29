@@ -44,7 +44,7 @@ Before creating bug reports, please check the [existing issues](https://github.c
 ### Environment
 - OS: Windows 11
 - Python: 3.13 (or 3.8+)
-- MetaboGraph: v1.0.0
+- MetaboGraph: v1.0.1
 
 ### Additional Context
 [Screenshots, error logs, etc.]

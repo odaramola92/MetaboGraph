@@ -283,7 +283,7 @@ pip install pyinstaller
 # Build executable
 pyinstaller metabograph.spec
 
-# Output: dist/MetaboGraph/<app_name>.exe (e.g. MetaboGraph_v1.0.0.exe)
+# Output: dist/MetaboGraph/<app_name>.exe (e.g. MetaboGraph_v1.0.1.exe)
 ```
 
 ### Running Tests

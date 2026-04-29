@@ -117,7 +117,7 @@
 
 - [ ] **Create release package:**
   ```
-  MetaboGraph_v1.0.0.zip containing:
+  MetaboGraph_v1.0.1.zip containing:
   ├── MetaboliteAnnotationTool.exe
   ├── _internal/ (PyInstaller files)
   ├── README.txt (quick start)
@@ -127,7 +127,7 @@
 
 - [ ] **Create README.txt for release:**
   ```
-  MetaboGraph v1.0.0
+  MetaboGraph v1.0.1
   ==================
   
   QUICK START:

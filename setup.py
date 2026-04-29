@@ -15,7 +15,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="metabograph",
-    version="1.0.0",
+    version="1.0.1",
     author="Oluwatosin Daramola",
     author_email="oluwatosin.daramola@ttu.edu",
     description="Metabolite Annotation & Pathway Network Analysis Tool",
